@@ -1,0 +1,48 @@
+[crawler-ingest] License
+Copyright (c) [2026] [ZAQ - https://zaq.ai]
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to use,
+copy, modify, merge, and distribute the Software, subject to the following
+conditions:
+
+1. NON-COMMERCIAL USE
+   The Software may be used freely for non-commercial purposes, including
+   personal, educational, research, and open-source projects, provided that
+   the conditions in this license are met.
+
+2. ATTRIBUTION
+   All copies, modifications, or substantial uses of the Software must include
+   clear and visible credit to the original author(s), including:
+   - The original copyright notice above.
+   - A link to the original repository: [[repository URL](https://github.com/www-zaq-ai/crawler-ingest)].
+   - A statement indicating any modifications made, if applicable.
+
+3. COMMERCIAL USE
+   Any commercial use of the Software — including but not limited to use in
+   commercial products, services, SaaS platforms, paid tools, or any activity
+   intended for monetary gain — requires prior written permission from the
+   copyright holder(s). To request a commercial license, contact:
+   [contact email or URL].
+
+4. SHARE-ALIKE / CONTRIBUTION REQUIREMENT
+   If you modify, adapt, or create derivative works based on the Software,
+   you must:
+   a) Make the modified source code publicly available under this same license.
+   b) Contribute your changes back to the original project by submitting them
+      (e.g., via pull request) within a reasonable timeframe.
+   c) Clearly document all changes made.
+
+5. NO WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE.
+
+6. TERMINATION
+   Any violation of the above terms automatically terminates your rights under
+   this license. Upon termination, you must cease all use and distribution of
+   the Software and any derivative works.
