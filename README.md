@@ -1,11 +1,13 @@
 # 📄 crawler-ingest
 
-A pipeline that converts PDFs into clean, vector-DB-ready markdown — extracting images, deduplicating them, generating text descriptions via AI, and injecting everything back into polished documents.
+A pipeline that converts PDFs into clean, vector-DB-ready markdown — extracting images, deduplicating them, generating text descriptions via AI, and injecting everything back into polished documents. Includes a web crawler to discover and download content from entire websites.
 
 ---
 
 ## ✨ Features
 
+- **Web Crawler** — discover all pages on a site, download PDFs, convert HTML to markdown
+- **CSV Reports** — detailed crawl reports for filtering and reviewing discovered content
 - **PDF → Markdown** conversion with image extraction
 - **Image deduplication** using perceptual hashing
 - **AI-powered image descriptions** via Pixtral API
@@ -16,13 +18,26 @@ A pipeline that converts PDFs into clean, vector-DB-ready markdown — extractin
 
 ## 🚀 Quick Start
 
-Run the full pipeline with a single command:
+### Crawl a website
+
+```bash
+# Discover all pages and PDFs (dry run with report)
+python web_crawler.py https://example.com --dry-run
+
+# Crawl and download everything
+python web_crawler.py https://example.com -o ./crawled
+
+# Download only PDFs
+python web_crawler.py https://example.com -o ./crawled --pdfs-only
+```
+
+### Process PDFs
 
 ```bash
 python pipeline.py report.pdf
 ```
 
-That's it. The pipeline handles extraction, deduplication, description generation, cleanup, and injection automatically.
+The pipeline handles extraction, deduplication, description generation, cleanup, and injection automatically.
 
 **Output:**
 ```
@@ -30,6 +45,77 @@ clean_report.md          # Final markdown ready for vector DB
 images/report/           # Unique images only
   descriptions.json      # All image descriptions
   duplicate_mapping.txt  # Record of what was removed
+```
+
+---
+
+## 🌐 Web Crawler
+
+The crawler takes a starting URL, discovers all pages on the same domain via breadth-first traversal, downloads PDFs, and converts HTML pages to markdown.
+
+### Usage
+
+```bash
+# Dry run — discover pages and generate a CSV report
+python web_crawler.py https://example.com --dry-run
+
+# Full crawl with output
+python web_crawler.py https://example.com -o ./crawled
+
+# Only grab PDFs
+python web_crawler.py https://example.com -o ./crawled --pdfs-only
+
+# Limit scope
+python web_crawler.py https://example.com -o ./crawled --max-depth 3 --max-pages 100
+
+# Custom request delay
+python web_crawler.py https://example.com -o ./crawled --delay 1.5
+```
+
+### Output Structure
+
+```
+./crawled/
+  pdfs/                          # Downloaded PDFs (ready for pipeline.py)
+  markdown/                      # HTML pages converted to .md
+  crawl_report_<domain>_<ts>.csv # Crawl report
+```
+
+### CSV Report
+
+A CSV report is generated automatically after each crawl (including dry runs). You can use it to review discovered pages, filter by depth, find which pages contain PDFs, and identify errors.
+
+| Column | Description |
+|--------|-------------|
+| `url` | The page or PDF URL |
+| `type` | `page` or `pdf` |
+| `status` | `crawled`, `found` (dry-run), `downloaded`, or `error` |
+| `depth` | How many links deep from the start URL |
+| `title` | Page title (HTML pages only) |
+| `pdf_links_count` | Number of PDFs found on that page |
+| `found_on` | Parent page URL where the PDF was linked |
+| `saved_as` | Local file path if downloaded |
+| `size_kb` | PDF file size |
+| `error` | Error message if failed |
+
+Report options:
+
+```bash
+# Custom report path
+python web_crawler.py https://example.com --dry-run --report ./report.csv
+
+# Disable report
+python web_crawler.py https://example.com -o ./crawled --no-report
+```
+
+### Crawler → Pipeline Workflow
+
+```bash
+# Step 1: Crawl and download PDFs
+python web_crawler.py https://example.com -o ./crawled --pdfs-only
+
+# Step 2: Process all downloaded PDFs
+python pipeline.py --input-folder ./crawled/pdfs --output-folder ./markdown
 ```
 
 ---
@@ -147,6 +233,16 @@ python pipeline.py report.pdf --keep-duplicates
 # Quiet mode
 python pipeline.py report.pdf --quiet
 ```
+
+---
+
+## 📦 Installation
+
+```bash
+pip install -r requirements.txt
+```
+
+Requires Python 3.9+. Set `SCALEWAY_API_KEY` environment variable for image description generation.
 
 ---
 

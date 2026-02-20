@@ -1,0 +1,12 @@
+# PDF to Markdown pipeline
+pymupdf4llm
+pymupdf
+
+# Image processing & deduplication
+Pillow
+imagehash
+
+# Web crawler
+requests
+beautifulsoup4
+markdownify
