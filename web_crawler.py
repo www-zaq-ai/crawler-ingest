@@ -2,6 +2,7 @@
 """
 Web Crawler - Crawls websites, downloads PDFs, and converts pages to Markdown.
 Integrates with the existing PDF-to-Markdown pipeline.
+Uses Playwright for JavaScript-rendered content.
 
 Usage:
     # Discover all pages (dry run) - generates report automatically
@@ -27,6 +28,10 @@ Usage:
 
     # Disable report generation
     python web_crawler.py https://example.com -o ./crawled --no-report
+
+Requirements:
+    pip install playwright requests beautifulsoup4 markdownify
+    playwright install chromium
 """
 
 import argparse
@@ -40,22 +45,39 @@ from collections import deque
 from datetime import datetime
 from urllib.parse import urljoin, urlparse, urlunparse, unquote
 
+import subprocess
+
 import requests
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 
 
+def ensure_playwright():
+    """Check if Playwright is installed, install it if not."""
+    try:
+        from playwright.sync_api import sync_playwright
+        return sync_playwright
+    except ImportError:
+        print("[INFO] Playwright not found. Installing...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
+        subprocess.check_call([sys.executable, "-m", "playwright", "install", "chromium"])
+        from playwright.sync_api import sync_playwright
+        return sync_playwright
+
+
 DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; PipelineCrawler/1.0)"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
 }
 
 
 def normalize_url(url):
     """Normalize a URL for deduplication."""
     parsed = urlparse(url)
-    # Remove fragment
     normalized = parsed._replace(fragment="")
-    # Remove trailing slash from path (except root)
     path = normalized.path.rstrip("/") if normalized.path != "/" else "/"
     normalized = normalized._replace(path=path)
     return urlunparse(normalized)
@@ -72,7 +94,6 @@ def is_valid_url(url):
     parsed = urlparse(url)
     if parsed.scheme and parsed.scheme not in ("http", "https"):
         return False
-    # Skip common non-content paths
     skip_patterns = [
         r"mailto:", r"tel:", r"javascript:", r"#$",
         r"\.(jpg|jpeg|png|gif|svg|ico|css|js|woff|woff2|ttf|eot|mp4|mp3|zip|tar|gz)$",
@@ -89,17 +110,12 @@ def url_to_filename(url, extension=".md"):
     path = parsed.path.strip("/")
     if not path:
         path = "index"
-    # Replace slashes with underscores
     safe_name = path.replace("/", "_")
-    # Remove or replace unsafe characters
     safe_name = re.sub(r'[^\w\-.]', '_', safe_name)
-    # Remove trailing dots/underscores
     safe_name = safe_name.strip("_.")
     if not safe_name:
         safe_name = hashlib.md5(url.encode()).hexdigest()[:12]
-    # Ensure correct extension
     if not safe_name.endswith(extension):
-        # Remove existing extension if any
         safe_name = re.sub(r'\.[^.]+$', '', safe_name)
         safe_name += extension
     return safe_name
@@ -112,7 +128,6 @@ def extract_links(soup, base_url):
         href = tag["href"].strip()
         if not href:
             continue
-        # Resolve relative URLs
         absolute = urljoin(base_url, href)
         links.add(absolute)
     return links
@@ -126,7 +141,6 @@ def extract_pdf_links(soup, base_url):
         if href.lower().endswith(".pdf"):
             absolute = urljoin(base_url, href)
             pdf_links.add(absolute)
-    # Also check for embedded PDFs (iframes, embeds)
     for tag in soup.find_all(["iframe", "embed", "object"], src=True):
         src = tag.get("src", "") or tag.get("data", "")
         if src and src.lower().endswith(".pdf"):
@@ -134,48 +148,28 @@ def extract_pdf_links(soup, base_url):
     return pdf_links
 
 
-def html_to_markdown(soup, url):
+def html_to_markdown(html, url):
     """Convert HTML content to clean Markdown."""
-    # Try to find main content area
-    main_content = (
-        soup.find("main")
-        or soup.find("article")
-        or soup.find("div", {"role": "main"})
-        or soup.find("div", class_=re.compile(r"content|main|article|post", re.I))
-        or soup.find("body")
-    )
-    if main_content is None:
-        main_content = soup
+    soup = BeautifulSoup(html, "html.parser")
 
-    # Remove nav, header, footer, sidebar, scripts, styles
-    for tag in main_content.find_all(
-        ["nav", "header", "footer", "aside", "script", "style", "noscript", "form"]
-    ):
+    # Remove non-content elements
+    for tag in soup.find_all(["script", "style", "noscript", "nav", "footer", "header", "iframe"]):
         tag.decompose()
 
-    # Remove elements commonly used for navigation/UI
-    for selector in [".sidebar", ".nav", ".menu", ".breadcrumb", ".pagination", ".footer", ".header"]:
-        for tag in main_content.select(selector):
-            tag.decompose()
+    # Get page title
+    title_tag = soup.find("title")
+    title = title_tag.get_text(strip=True) if title_tag else urlparse(url).path
+
+    # Use body content
+    body = soup.find("body")
+    if body is None:
+        body = soup
 
     # Convert to markdown
-    markdown_text = md(
-        str(main_content),
-        heading_style="atx",
-        bullets="-",
-        strip=["img"],  # Strip images (we handle PDFs separately)
-    )
+    markdown_text = md(str(body), heading_style="atx", bullets="-", strip=["img"])
+    markdown_text = re.sub(r'\n{3,}', '\n\n', markdown_text).strip()
 
-    # Clean up excessive whitespace
-    markdown_text = re.sub(r'\n{3,}', '\n\n', markdown_text)
-    markdown_text = markdown_text.strip()
-
-    # Add source URL as header
-    title = soup.find("title")
-    title_text = title.get_text(strip=True) if title else urlparse(url).path
-    header = f"# {title_text}\n\n> Source: {url}\n\n"
-
-    return header + markdown_text
+    return f"# {title}\n\n> Source: {url}\n\n{markdown_text}"
 
 
 def download_pdf(url, output_folder, session, delay=1.0):
@@ -185,7 +179,6 @@ def download_pdf(url, output_folder, session, delay=1.0):
         response = session.get(url, timeout=30, stream=True)
         response.raise_for_status()
 
-        # Determine filename
         filename = unquote(os.path.basename(urlparse(url).path))
         if not filename.endswith(".pdf"):
             filename += ".pdf"
@@ -193,7 +186,6 @@ def download_pdf(url, output_folder, session, delay=1.0):
 
         filepath = os.path.join(output_folder, filename)
 
-        # Handle duplicates
         counter = 1
         base, ext = os.path.splitext(filepath)
         while os.path.exists(filepath):
@@ -211,27 +203,12 @@ def download_pdf(url, output_folder, session, delay=1.0):
 
 
 def generate_report(crawl_log, report_path, start_url):
-    """
-    Generate a CSV report from crawl results.
-
-    Args:
-        crawl_log: List of dicts with crawl data per URL
-        report_path: Path to save the CSV file
-        start_url: The starting URL of the crawl
-    """
+    """Generate a CSV report from crawl results."""
     os.makedirs(os.path.dirname(report_path) or ".", exist_ok=True)
 
     fieldnames = [
-        "url",
-        "type",
-        "status",
-        "depth",
-        "title",
-        "pdf_links_count",
-        "found_on",
-        "saved_as",
-        "size_kb",
-        "error",
+        "url", "type", "status", "depth", "title",
+        "pdf_links_count", "found_on", "saved_as", "size_kb", "error",
     ]
 
     with open(report_path, "w", newline="", encoding="utf-8") as f:
@@ -257,6 +234,7 @@ def crawl(
 ):
     """
     Crawl a website starting from start_url.
+    Uses Playwright to render JavaScript-heavy pages.
 
     Returns:
         dict with keys: pages_found, pages_crawled, pdfs_found, pdfs_downloaded, md_files, errors
@@ -278,12 +256,13 @@ def crawl(
         os.makedirs(pdf_folder, exist_ok=True)
         os.makedirs(md_folder, exist_ok=True)
 
+    # requests session only used for PDF downloads
     session = requests.Session()
     session.headers.update(DEFAULT_HEADERS)
 
     # BFS crawl
     visited = set()
-    queue = deque()  # (url, depth)
+    queue = deque()
     queue.append((normalize_url(start_url), 0))
 
     all_pages = set()
@@ -291,13 +270,13 @@ def crawl(
     downloaded_pdfs = []
     saved_md_files = []
     errors = []
-    crawl_log = []  # For CSV report
+    crawl_log = []
 
     pages_crawled = 0
 
     if verbose:
         print(f"\n{'='*60}")
-        print(f"  Web Crawler")
+        print(f"  Web Crawler (Playwright)")
         print(f"  Target: {start_url}")
         print(f"  Domain: {base_domain}")
         print(f"  Max depth: {max_depth or 'unlimited'}")
@@ -306,88 +285,54 @@ def crawl(
         print(f"  Mode: {'dry run' if dry_run else 'pdfs only' if pdfs_only else 'full crawl'}")
         print(f"{'='*60}\n")
 
-    while queue:
-        if max_pages and pages_crawled >= max_pages:
-            if verbose:
-                print(f"\n[INFO] Reached max pages limit ({max_pages})")
-            break
+    sync_playwright = ensure_playwright()
 
-        url, depth = queue.popleft()
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        page = browser.new_context(ignore_https_errors=True).new_page()
 
-        if url in visited:
-            continue
-        if max_depth is not None and depth > max_depth:
-            continue
-
-        visited.add(url)
-
-        try:
-            time.sleep(delay)
-            response = session.get(url, timeout=30)
-            content_type = response.headers.get("content-type", "").lower()
-
-            # Skip non-HTML responses (but catch PDFs)
-            if "application/pdf" in content_type:
-                all_pdfs.add(url)
-                saved_path = None
-                size_kb = 0
-                error_msg = ""
+        while queue:
+            if max_pages and pages_crawled >= max_pages:
                 if verbose:
-                    print(f"  [PDF]  {url}")
-                if not dry_run and pdf_folder:
-                    path, info = download_pdf(url, pdf_folder, session, delay=0)
-                    if path:
-                        downloaded_pdfs.append(path)
-                        saved_path = path
-                        size_kb = info
-                        if verbose:
-                            print(f"         -> saved ({info:.1f} KB)")
-                    else:
-                        errors.append((url, info))
-                        error_msg = info
-                crawl_log.append({
-                    "url": url,
-                    "type": "pdf",
-                    "status": "downloaded" if saved_path else ("found" if dry_run else "error"),
-                    "depth": depth,
-                    "title": "",
-                    "pdf_links_count": 0,
-                    "found_on": "direct",
-                    "saved_as": saved_path or "",
-                    "size_kb": f"{size_kb:.1f}" if isinstance(size_kb, float) else "",
-                    "error": error_msg,
-                })
+                    print(f"\n[INFO] Reached max pages limit ({max_pages})")
+                break
+
+            url, depth = queue.popleft()
+
+            if url in visited:
+                continue
+            if max_depth is not None and depth > max_depth:
                 continue
 
-            if "text/html" not in content_type:
-                continue
+            visited.add(url)
 
-            response.raise_for_status()
-            pages_crawled += 1
-            all_pages.add(url)
+            try:
+                time.sleep(delay)
 
-            if verbose:
-                print(f"  [{pages_crawled:>4}]  depth={depth}  {url}")
+                response = page.goto(url, timeout=60000, wait_until="domcontentloaded")
 
-            soup = BeautifulSoup(response.text, "html.parser")
+                # Wait for JS-rendered content to load
+                page.wait_for_timeout(3000)
 
-            # Get page title
-            title_tag = soup.find("title")
-            page_title = title_tag.get_text(strip=True) if title_tag else ""
+                if response is None:
+                    errors.append((url, "No response"))
+                    if verbose:
+                        print(f"  [ERR]  {url}: No response")
+                    continue
 
-            # Extract PDF links
-            pdf_links = extract_pdf_links(soup, url)
-            for pdf_url in pdf_links:
-                normalized_pdf = normalize_url(pdf_url)
-                if normalized_pdf not in all_pdfs:
-                    all_pdfs.add(normalized_pdf)
+                content_type = response.headers.get("content-type", "").lower()
+                status = response.status
+
+                # Skip non-HTML responses (but catch PDFs)
+                if "application/pdf" in content_type:
+                    all_pdfs.add(url)
                     saved_path = None
                     size_kb = 0
                     error_msg = ""
                     if verbose:
-                        print(f"  [PDF]  {normalized_pdf}")
+                        print(f"  [PDF]  {url}")
                     if not dry_run and pdf_folder:
-                        path, info = download_pdf(normalized_pdf, pdf_folder, session, delay)
+                        path, info = download_pdf(url, pdf_folder, session, delay=0)
                         if path:
                             downloaded_pdfs.append(path)
                             saved_path = path
@@ -395,76 +340,117 @@ def crawl(
                             if verbose:
                                 print(f"         -> saved ({info:.1f} KB)")
                         else:
-                            errors.append((normalized_pdf, info))
+                            errors.append((url, info))
                             error_msg = info
                     crawl_log.append({
-                        "url": normalized_pdf,
-                        "type": "pdf",
+                        "url": url, "type": "pdf",
                         "status": "downloaded" if saved_path else ("found" if dry_run else "error"),
-                        "depth": depth,
-                        "title": "",
-                        "pdf_links_count": 0,
-                        "found_on": url,
-                        "saved_as": saved_path or "",
+                        "depth": depth, "title": "", "pdf_links_count": 0,
+                        "found_on": "direct", "saved_as": saved_path or "",
                         "size_kb": f"{size_kb:.1f}" if isinstance(size_kb, float) else "",
                         "error": error_msg,
                     })
+                    continue
 
-            # Convert page to markdown
-            md_saved_path = ""
-            if not dry_run and not pdfs_only and md_folder:
-                markdown_content = html_to_markdown(soup, url)
-                if markdown_content.strip():
-                    md_filename = url_to_filename(url, ".md")
-                    md_path = os.path.join(md_folder, md_filename)
-                    with open(md_path, "w", encoding="utf-8") as f:
-                        f.write(markdown_content)
-                    saved_md_files.append(md_path)
-                    md_saved_path = md_path
+                if "text/html" not in content_type:
+                    continue
 
-            # Log the page
-            crawl_log.append({
-                "url": url,
-                "type": "page",
-                "status": "crawled",
-                "depth": depth,
-                "title": page_title,
-                "pdf_links_count": len(pdf_links),
-                "found_on": "",
-                "saved_as": md_saved_path,
-                "size_kb": "",
-                "error": "",
-            })
+                if status >= 400:
+                    errors.append((url, f"HTTP {status}"))
+                    crawl_log.append({
+                        "url": url, "type": "page", "status": "error", "depth": depth,
+                        "title": "", "pdf_links_count": 0, "found_on": "",
+                        "saved_as": "", "size_kb": "", "error": f"HTTP {status}",
+                    })
+                    if verbose:
+                        print(f"  [ERR]  {url}: HTTP {status}")
+                    continue
 
-            # Discover new links
-            links = extract_links(soup, url)
-            for link in links:
-                normalized = normalize_url(link)
-                if (
-                    normalized not in visited
-                    and is_same_domain(normalized, base_domain)
-                    and is_valid_url(normalized)
-                ):
-                    queue.append((normalized, depth + 1))
+                # Get the fully rendered HTML from the browser
+                html_content = page.content()
 
-        except requests.exceptions.RequestException as e:
-            errors.append((url, str(e)))
-            crawl_log.append({
-                "url": url, "type": "page", "status": "error", "depth": depth,
-                "title": "", "pdf_links_count": 0, "found_on": "",
-                "saved_as": "", "size_kb": "", "error": str(e),
-            })
-            if verbose:
-                print(f"  [ERR]  {url}: {e}")
-        except Exception as e:
-            errors.append((url, str(e)))
-            crawl_log.append({
-                "url": url, "type": "page", "status": "error", "depth": depth,
-                "title": "", "pdf_links_count": 0, "found_on": "",
-                "saved_as": "", "size_kb": "", "error": str(e),
-            })
-            if verbose:
-                print(f"  [ERR]  {url}: {e}")
+                pages_crawled += 1
+                all_pages.add(url)
+
+                if verbose:
+                    print(f"  [{pages_crawled:>4}]  depth={depth}  {url}")
+
+                soup = BeautifulSoup(html_content, "html.parser")
+
+                title_tag = soup.find("title")
+                page_title = title_tag.get_text(strip=True) if title_tag else ""
+
+                # Extract PDF links
+                pdf_links = extract_pdf_links(soup, url)
+                for pdf_url in pdf_links:
+                    normalized_pdf = normalize_url(pdf_url)
+                    if normalized_pdf not in all_pdfs:
+                        all_pdfs.add(normalized_pdf)
+                        saved_path = None
+                        size_kb = 0
+                        error_msg = ""
+                        if verbose:
+                            print(f"  [PDF]  {normalized_pdf}")
+                        if not dry_run and pdf_folder:
+                            path, info = download_pdf(normalized_pdf, pdf_folder, session, delay)
+                            if path:
+                                downloaded_pdfs.append(path)
+                                saved_path = path
+                                size_kb = info
+                                if verbose:
+                                    print(f"         -> saved ({info:.1f} KB)")
+                            else:
+                                errors.append((normalized_pdf, info))
+                                error_msg = info
+                        crawl_log.append({
+                            "url": normalized_pdf, "type": "pdf",
+                            "status": "downloaded" if saved_path else ("found" if dry_run else "error"),
+                            "depth": depth, "title": "", "pdf_links_count": 0,
+                            "found_on": url, "saved_as": saved_path or "",
+                            "size_kb": f"{size_kb:.1f}" if isinstance(size_kb, float) else "",
+                            "error": error_msg,
+                        })
+
+                # Convert page to markdown
+                md_saved_path = ""
+                if not dry_run and not pdfs_only and md_folder:
+                    markdown_content = html_to_markdown(html_content, url)
+                    if markdown_content.strip():
+                        md_filename = url_to_filename(url, ".md")
+                        md_path = os.path.join(md_folder, md_filename)
+                        with open(md_path, "w", encoding="utf-8") as f:
+                            f.write(markdown_content)
+                        saved_md_files.append(md_path)
+                        md_saved_path = md_path
+
+                crawl_log.append({
+                    "url": url, "type": "page", "status": "crawled", "depth": depth,
+                    "title": page_title, "pdf_links_count": len(pdf_links),
+                    "found_on": "", "saved_as": md_saved_path, "size_kb": "", "error": "",
+                })
+
+                # Discover new links
+                links = extract_links(soup, url)
+                for link in links:
+                    normalized = normalize_url(link)
+                    if (
+                        normalized not in visited
+                        and is_same_domain(normalized, base_domain)
+                        and is_valid_url(normalized)
+                    ):
+                        queue.append((normalized, depth + 1))
+
+            except Exception as e:
+                errors.append((url, str(e)))
+                crawl_log.append({
+                    "url": url, "type": "page", "status": "error", "depth": depth,
+                    "title": "", "pdf_links_count": 0, "found_on": "",
+                    "saved_as": "", "size_kb": "", "error": str(e),
+                })
+                if verbose:
+                    print(f"  [ERR]  {url}: {e}")
+
+        browser.close()
 
     # Summary
     results = {
@@ -478,17 +464,14 @@ def crawl(
         "crawl_log": crawl_log,
     }
 
-    # Generate CSV report
     if report_path:
         generate_report(crawl_log, report_path, start_url)
     elif output_folder:
-        # Auto-generate report in output folder
         domain_name = base_domain.replace(".", "_")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         auto_report = os.path.join(output_folder, f"crawl_report_{domain_name}_{timestamp}.csv")
         generate_report(crawl_log, auto_report, start_url)
     elif dry_run and crawl_log:
-        # Dry run with no output folder — save report in current directory
         domain_name = base_domain.replace(".", "_")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         auto_report = f"crawl_report_{domain_name}_{timestamp}.csv"
@@ -522,66 +505,25 @@ def main():
         description="Crawl a website, download PDFs, and convert pages to Markdown."
     )
     parser.add_argument("url", help="Starting URL to crawl")
-    parser.add_argument(
-        "--output-folder", "-o",
-        default="./crawled",
-        help="Output folder (default: ./crawled)",
-    )
-    parser.add_argument(
-        "--max-depth",
-        type=int,
-        default=None,
-        help="Maximum crawl depth (default: unlimited)",
-    )
-    parser.add_argument(
-        "--max-pages",
-        type=int,
-        default=None,
-        help="Maximum number of pages to crawl (default: unlimited)",
-    )
-    parser.add_argument(
-        "--delay",
-        type=float,
-        default=1.0,
-        help="Delay between requests in seconds (default: 1.0)",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Only discover pages and PDFs, don't download anything",
-    )
-    parser.add_argument(
-        "--pdfs-only",
-        action="store_true",
-        help="Only download PDFs, skip HTML-to-Markdown conversion",
-    )
-    parser.add_argument(
-        "--quiet", "-q",
-        action="store_true",
-        help="Minimal output",
-    )
-    parser.add_argument(
-        "--report",
-        default=None,
-        help="Path to save CSV report (default: auto-generated in output folder)",
-    )
-    parser.add_argument(
-        "--no-report",
-        action="store_true",
-        help="Disable CSV report generation",
-    )
+    parser.add_argument("--output-folder", "-o", default="./crawled", help="Output folder (default: ./crawled)")
+    parser.add_argument("--max-depth", type=int, default=None, help="Maximum crawl depth (default: unlimited)")
+    parser.add_argument("--max-pages", type=int, default=None, help="Maximum number of pages to crawl (default: unlimited)")
+    parser.add_argument("--delay", type=float, default=1.0, help="Delay between requests in seconds (default: 1.0)")
+    parser.add_argument("--dry-run", action="store_true", help="Only discover pages and PDFs, don't download anything")
+    parser.add_argument("--pdfs-only", action="store_true", help="Only download PDFs, skip HTML-to-Markdown conversion")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Minimal output")
+    parser.add_argument("--report", default=None, help="Path to save CSV report (default: auto-generated in output folder)")
+    parser.add_argument("--no-report", action="store_true", help="Disable CSV report generation")
 
     args = parser.parse_args()
 
-    # Ensure URL has scheme
     url = args.url
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
 
-    # Determine report path
     report_path = None
     if not args.no_report:
-        report_path = args.report  # None means auto-generate in output folder
+        report_path = args.report
 
     results = crawl(
         start_url=url,

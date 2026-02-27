@@ -10,3 +10,4 @@ imagehash
 requests
 beautifulsoup4
 markdownify
+playwright
