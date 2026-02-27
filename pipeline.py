@@ -17,12 +17,13 @@ class PDFPipeline:
     
     def __init__(self, verbose: bool = True):
         self.verbose = verbose
+        script_dir = Path(__file__).resolve().parent
         self.scripts = {
-            'pdf_to_md': 'pdf_to_md.py',
-            'image_dedup': 'image_dedup.py',
-            'image_to_text': 'image_to_text.py',
-            'clean_md': 'clean_md.py',
-            'inject_descriptions': 'inject_descriptions.py'
+            'pdf_to_md': str(script_dir / 'pdf_to_md.py'),
+            'image_dedup': str(script_dir / 'image_dedup.py'),
+            'image_to_text': str(script_dir / 'image_to_text.py'),
+            'clean_md': str(script_dir / 'clean_md.py'),
+            'inject_descriptions': str(script_dir / 'inject_descriptions.py')
         }
     
     def log(self, message: str):
