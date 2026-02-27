@@ -595,8 +595,11 @@ def main():
         report_path=report_path,
     )
 
-    if results and results["errors"]:
+    if results and results["pages_crawled"] == 0:
+        print(f"\n✗ Crawl failed: no pages could be crawled")
         sys.exit(1)
+    elif results and results["errors"]:
+        print(f"\n⚠ Crawl completed with {len(results['errors'])} error(s)")
 
 
 if __name__ == "__main__":
