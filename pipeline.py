@@ -17,6 +17,7 @@ class PDFPipeline:
     
     def __init__(self, verbose: bool = True):
         self.verbose = verbose
+        self.python = sys.executable
         script_dir = Path(__file__).resolve().parent
         self.scripts = {
             'pdf_to_md': str(script_dir / 'pdf_to_md.py'),
@@ -102,7 +103,7 @@ class PDFPipeline:
         
         # Step 1: Extract PDF with images
         cmd = [
-            'python3', self.scripts['pdf_to_md'],
+            self.python, self.scripts['pdf_to_md'],
             str(pdf_path), str(output_md),
             '--with-images', '--images-dir', str(images_dir)
         ]
@@ -117,7 +118,7 @@ class PDFPipeline:
         
         # Step 2: Remove duplicate images
         cmd = [
-            'python3', self.scripts['image_dedup'],
+            self.python, self.scripts['image_dedup'],
             str(images_folder),
             '--threshold', str(threshold)
         ]
@@ -136,7 +137,7 @@ class PDFPipeline:
         
         # Step 3: Get image descriptions with Pixtral
         cmd = [
-            'python3', self.scripts['image_to_text'],
+            self.python, self.scripts['image_to_text'],
             '--folder', str(images_folder),
             '--output', str(descriptions_json)
         ]
@@ -149,7 +150,7 @@ class PDFPipeline:
         # Step 4: Clean markdown (remove duplicate image references)
         if has_duplicates:
             cmd = [
-                'python3', self.scripts['clean_md'],
+                self.python, self.scripts['clean_md'],
                 str(output_md),
                 '--mapping', str(duplicate_mapping)
             ]
@@ -163,7 +164,7 @@ class PDFPipeline:
         
         # Step 5: Inject image descriptions
         cmd = [
-            'python3', self.scripts['inject_descriptions'],
+            self.python, self.scripts['inject_descriptions'],
             str(output_md),
             '--descriptions', str(descriptions_json),
             '--format', format_style
