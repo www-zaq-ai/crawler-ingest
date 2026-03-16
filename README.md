@@ -9,6 +9,8 @@ A pipeline that converts PDFs into clean, vector-DB-ready markdown — extractin
 - **Web Crawler** — discover all pages on a site, download PDFs, convert HTML to markdown
 - **CSV Reports** — detailed crawl reports for filtering and reviewing discovered content
 - **PDF → Markdown** conversion with image extraction
+- **DOCX → Markdown** conversion using mammoth + python-docx (tables, headings, lists)
+- **XLSX → Markdown** conversion using pandas (multi-sheet, natural-language sentences)
 - **Image deduplication** using perceptual hashing
 - **AI-powered image descriptions** via Pixtral API
 - **Automated cleanup** of duplicate references in markdown
@@ -45,6 +47,26 @@ clean_report.md          # Final markdown ready for vector DB
 images/report/           # Unique images only
   descriptions.json      # All image descriptions
   duplicate_mapping.txt  # Record of what was removed
+```
+
+### Convert DOCX files
+
+```bash
+# Single file
+python docx_to_md.py report.docx
+
+# Entire folder
+python docx_to_md.py --input-folder ./docs --output-folder ./markdown
+```
+
+### Convert XLSX files
+
+```bash
+# Single file (all sheets)
+python xlsx_to_md.py report.xlsx
+
+# Entire folder
+python xlsx_to_md.py --input-folder ./sheets --output-folder ./markdown
 ```
 
 ---
@@ -129,6 +151,69 @@ python pipeline.py --input-folder ./crawled/pdfs --output-folder ./markdown
 | 3 | `clean_md.py` | Removes or replaces duplicate image references |
 | 4 | `image_to_text.py` | Generates AI descriptions for each image |
 | 5 | `inject_descriptions.py` | Replaces image tags with text descriptions |
+
+---
+
+## 📝 Document Conversion
+
+### DOCX → Markdown
+
+Converts Word documents to clean markdown using a hybrid approach: **mammoth** handles headings, paragraphs, and lists while **python-docx** renders tables as proper markdown tables.
+
+```bash
+# Single file
+python docx_to_md.py report.docx
+
+# Single file with custom output path
+python docx_to_md.py report.docx --output report.md
+
+# Entire folder (preserves sub-folder structure)
+python docx_to_md.py --input-folder ./docs --output-folder ./markdown
+
+# Quiet mode
+python docx_to_md.py report.docx --quiet
+```
+
+**What it handles:**
+- Headings (H1–H4), paragraphs, bullet and numbered lists
+- Tables → proper `| col | col |` markdown tables
+- Inline formatting: bold, italic, inline code
+- Folder mode with sub-folder structure preservation
+
+### XLSX → Markdown
+
+Converts Excel and CSV files to natural-language markdown. Each row becomes a readable sentence, making the output meaningful for vector search and LLM reasoning.
+
+```bash
+# Single file (all sheets)
+python xlsx_to_md.py report.xlsx
+
+# Single file with custom output path
+python xlsx_to_md.py report.xlsx --output report.md
+
+# Specific sheet only
+python xlsx_to_md.py report.xlsx --sheet "Summary"
+
+# Entire folder (preserves sub-folder structure)
+python xlsx_to_md.py --input-folder ./sheets --output-folder ./markdown
+
+# Quiet mode
+python xlsx_to_md.py report.xlsx --quiet
+```
+
+**What it handles:**
+- `.xlsx`, `.xls`, and `.csv` files
+- Multi-sheet Excel files — each sheet becomes an `## H2` section
+- Unnamed first columns (e.g. dates) used as sentence prefixes
+- Empty rows and columns automatically dropped
+
+**Example output:**
+```markdown
+## Sales
+
+January — Revenue: 120000, Expenses: 80000, Profit: 40000.
+February — Revenue: 135000, Expenses: 85000, Profit: 50000.
+```
 
 ---
 

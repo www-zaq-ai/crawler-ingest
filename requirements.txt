@@ -2,6 +2,15 @@
 pymupdf4llm
 pymupdf
 
+# Docx to Markdown
+mammoth
+python-docx
+
+# XLSX to Markdown
+pandas 
+openpyxl 
+tabulate
+
 # Image processing & deduplication
 Pillow
 imagehash
