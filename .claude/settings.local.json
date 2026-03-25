@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uvx --version)",
+      "Bash(npx --version)",
+      "Skill(update-config)",
+      "Bash(uvx --from serena serena-mcp-server --help)",
+      "Bash(uvx --from serena)",
+      "Bash(pip show:*)",
+      "Bash(uvx serena:*)",
+      "Bash(pip index:*)",
+      "Bash(uvx serena-mcp-server:*)",
+      "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
+      "Bash(python:*)"
+    ]
+  }
+}

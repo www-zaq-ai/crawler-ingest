@@ -13,6 +13,20 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import requests
 
+DESCRIBE_PROMPT = """Describe this image concisely for document search and retrieval.
+Focus only on actual content present: visible text, data in tables/charts,
+diagrams, and meaningful visual elements. Skip introductions, explanations
+about what's not in the image, and formatting descriptions. Be direct and factual."""
+
+TRANSCRIBE_PROMPT = """You are processing a slide from a technical document for search indexing.
+Extract ALL of the following if present:
+1. Exact visible text (titles, labels, paragraph numbers like 4.6.8, section references)
+2. Table contents (row by row)
+3. Diagram description (what it shows, what the arrows/shapes mean)
+4. Any standards references (EN XXXXX, ISO XXXXX, §X.X.X)
+
+Be exhaustive with text transcription. Do not paraphrase visible text — copy it exactly."""
+
 
 class PixtralImageProcessor:
     """Process images using Scaleway's Pixtral vision model"""
@@ -117,10 +131,7 @@ class PixtralImageProcessor:
         
         # Default RAG-optimized prompt
         if not prompt:
-            prompt = """Describe this image concisely for document search and retrieval. 
-Focus only on actual content present: visible text, data in tables/charts, 
-diagrams, and meaningful visual elements. Skip introductions, explanations 
-about what's not in the image, and formatting descriptions. Be direct and factual."""
+            prompt = DESCRIBE_PROMPT
         
         # Encode image
         base64_image = self.encode_image(image_path)
@@ -166,65 +177,119 @@ about what's not in the image, and formatting descriptions. Be direct and factua
         
         return description.strip()
     
-    def process_folder(self, folder_path: str, output_file: Optional[str] = None, 
-                      prompt: Optional[str] = None, clean: bool = True) -> Dict[str, str]:
+    def _load_image_heavy_set(self, page_classification_path: Optional[str]) -> set:
+        """
+        Load set of image filenames that belong to image-heavy pages.
+
+        Args:
+            page_classification_path: Path to page_classification.json from pdf_to_md.py
+
+        Returns:
+            Set of image filenames that should use the transcribe prompt
+        """
+        if not page_classification_path:
+            return set()
+
+        classification_file = Path(page_classification_path)
+        if not classification_file.exists():
+            print(f"⚠ Page classification not found: {classification_file}")
+            return set()
+
+        with open(classification_file, 'r', encoding='utf-8') as f:
+            classification = json.load(f)
+
+        image_heavy_images = set()
+        for page_info in classification.values():
+            if page_info.get('type') == 'image_heavy':
+                image_heavy_images.update(page_info.get('images', []))
+
+        if image_heavy_images:
+            print(f"  {len(image_heavy_images)} image(s) from image-heavy pages will use transcribe prompt")
+
+        return image_heavy_images
+
+    def process_folder(self, folder_path: str, output_file: Optional[str] = None,
+                      prompt: Optional[str] = None, clean: bool = True,
+                      prompt_mode: str = 'describe',
+                      page_classification_path: Optional[str] = None) -> Dict[str, str]:
         """
         Process all images in a folder
-        
+
         Args:
             folder_path: Path to folder containing images
             output_file: Path to save results (JSON format)
-            prompt: Custom prompt for all images
+            prompt: Custom prompt for all images (overrides prompt_mode)
             clean: Apply post-processing to clean responses
-        
+            prompt_mode: 'describe' (default) or 'transcribe' — used when no custom prompt
+            page_classification_path: Path to page_classification.json for per-image
+                                     prompt selection (image-heavy pages get transcribe)
+
         Returns:
             Dict mapping image filenames to descriptions
         """
         folder = Path(folder_path)
         if not folder.exists():
             raise FileNotFoundError(f"Folder not found: {folder}")
-        
+
         # Supported image extensions
         image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
-        
+
         # Find all images
         image_files = []
         for ext in image_extensions:
             image_files.extend(folder.glob(f"*{ext}"))
             image_files.extend(folder.glob(f"*{ext.upper()}"))
-        
+
         if not image_files:
             print(f"No images found in {folder}")
             return {}
-        
+
         print(f"Found {len(image_files)} image(s)")
+
+        # Load page classification for per-image prompt selection
+        image_heavy_set = self._load_image_heavy_set(page_classification_path)
+
+        # Determine default prompt based on mode
+        if not prompt:
+            default_prompt = TRANSCRIBE_PROMPT if prompt_mode == 'transcribe' else DESCRIBE_PROMPT
+        else:
+            default_prompt = prompt
+
         print("-" * 60)
-        
+
         results = {}
-        
+
         for idx, img_path in enumerate(image_files, 1):
             try:
-                print(f"[{idx}/{len(image_files)}] Processing: {img_path.name}")
-                description = self.get_image_description(str(img_path), prompt, clean=clean)
+                # Use transcribe prompt for images from image-heavy pages
+                if img_path.name in image_heavy_set:
+                    img_prompt = TRANSCRIBE_PROMPT
+                    mode_label = "transcribe"
+                else:
+                    img_prompt = default_prompt
+                    mode_label = prompt_mode if not prompt else "custom"
+
+                print(f"[{idx}/{len(image_files)}] Processing: {img_path.name} ({mode_label})")
+                description = self.get_image_description(str(img_path), img_prompt, clean=clean)
                 results[img_path.name] = description
                 print(f"  ✓ Done")
             except Exception as e:
                 print(f"  ✗ Error: {e}")
                 results[img_path.name] = f"ERROR: {str(e)}"
-        
+
         print("-" * 60)
         print(f"Completed: {len([v for v in results.values() if not v.startswith('ERROR')])}/{len(image_files)}")
-        
+
         # Save results
         if output_file:
             output_path = Path(output_file)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             with open(output_path, 'w', encoding='utf-8') as f:
                 json.dump(results, f, indent=2, ensure_ascii=False)
-            
+
             print(f"✓ Results saved to: {output_path}")
-        
+
         return results
 
 
@@ -254,20 +319,27 @@ Environment:
     parser.add_argument('image', nargs='?', help='Single image file to process')
     parser.add_argument('--folder', help='Folder containing images to process')
     parser.add_argument('--output', help='Output JSON file for results')
-    parser.add_argument('--prompt', help='Custom prompt for image description')
+    parser.add_argument('--prompt', help='Custom prompt for image description (overrides --prompt-mode)')
+    parser.add_argument('--prompt-mode', choices=['describe', 'transcribe'], default='describe',
+                       help='Prompt mode: describe (default, good for photos/diagrams) or '
+                            'transcribe (extract exact text + structure, good for slides)')
+    parser.add_argument('--page-classification', help='Path to page_classification.json from pdf_to_md.py '
+                       '(auto-selects transcribe for image-heavy page images)')
     parser.add_argument('--api-key', help='Scaleway API key (or set SCALEWAY_API_KEY env var)')
     parser.add_argument('--no-clean', action='store_true', help='Skip post-processing cleanup of responses')
-    
+
     args = parser.parse_args()
-    
+
     try:
         # Initialize processor
         processor = PixtralImageProcessor(api_key=args.api_key)
-        
+
         # Process folder
         if args.folder:
-            results = processor.process_folder(args.folder, args.output, args.prompt, 
-                                             clean=not args.no_clean)
+            results = processor.process_folder(args.folder, args.output, args.prompt,
+                                             clean=not args.no_clean,
+                                             prompt_mode=args.prompt_mode,
+                                             page_classification_path=args.page_classification)
             
             # Display sample results
             if results:
