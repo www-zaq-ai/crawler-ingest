@@ -9,10 +9,14 @@ A pipeline that converts PDFs into clean, vector-DB-ready markdown — extractin
 - **Web Crawler** — discover all pages on a site, download PDFs, convert HTML to markdown
 - **CSV Reports** — detailed crawl reports for filtering and reviewing discovered content
 - **PDF → Markdown** conversion with image extraction
+- **Page-aware extraction** — classifies pages as image-heavy or text-heavy, strips junk text from slide pages
+- **Table reconstruction** — detects multi-column datasheet layouts and rebuilds them as proper markdown tables
+- **Image-region text cleanup** — removes OCR artifacts from text overlapping image bounding boxes
+- **Page separators** — `<!-- page: N -->` comments for downstream chunkers
 - **DOCX → Markdown** conversion using mammoth + python-docx (tables, headings, lists)
 - **XLSX → Markdown** conversion using pandas (multi-sheet, natural-language sentences)
 - **Image deduplication** using perceptual hashing
-- **AI-powered image descriptions** via Pixtral API
+- **AI-powered image descriptions** via Pixtral API with describe/transcribe prompt modes
 - **Automated cleanup** of duplicate references in markdown
 - **Full pipeline** mode for one-command processing
 
@@ -146,10 +150,10 @@ python pipeline.py --input-folder ./crawled/pdfs --output-folder ./markdown
 
 | Step | Script | What it does |
 |------|--------|--------------|
-| 1 | `pdf_to_md.py` | Extracts markdown and images from PDFs |
+| 1 | `pdf_to_md.py` | Page-aware extraction: markdown + images, table reconstruction, image-heavy classification |
 | 2 | `image_dedup.py` | Finds and removes duplicate images |
 | 3 | `clean_md.py` | Removes or replaces duplicate image references |
-| 4 | `image_to_text.py` | Generates AI descriptions for each image |
+| 4 | `image_to_text.py` | AI descriptions via Pixtral (auto-transcribe for image-heavy pages) |
 | 5 | `inject_descriptions.py` | Replaces image tags with text descriptions |
 
 ---
@@ -228,8 +232,11 @@ python pdf_to_md.py \
   --input-folder ./new_files \
   --output-folder ./new_output_files \
   --with-images \
-  --images-dir ./new_images
+  --images-dir ./new_images \
+  --image-heavy-threshold 30
 ```
+
+Each page is classified as **image-heavy** (< threshold words + has images) or **text-heavy**. Image-heavy pages have text artifacts stripped — Pixtral becomes the sole content source. Multi-column datasheet layouts are auto-detected and reconstructed as markdown tables. A `page_classification.json` manifest is written to the images folder for downstream tools.
 
 ### Step 2 — Deduplicate Images
 
@@ -278,6 +285,13 @@ python image_to_text.py chart.png
 # Entire folder
 python image_to_text.py --folder ./images/report --output descriptions.json
 
+# Use transcribe mode for slides (extracts exact text, tables, references)
+python image_to_text.py --folder ./images/report --output descriptions.json --prompt-mode transcribe
+
+# Auto-select prompt per image using page classification from Step 1
+python image_to_text.py --folder ./images/report --output descriptions.json \
+  --page-classification ./images/report/page_classification.json
+
 # Custom prompt
 python image_to_text.py --folder ./images/report --output results.json \
   --prompt "Extract all text and numbers visible in this image"
@@ -312,6 +326,12 @@ python pipeline.py --input-folder ./pdfs --output-folder ./markdown
 # Adjust dedup sensitivity and description format
 python pipeline.py report.pdf --threshold 3 --format paragraph --images-dir ./my_images
 
+# Tune image-heavy page detection (default: 30 words)
+python pipeline.py report.pdf --image-heavy-threshold 20
+
+# Use transcribe prompt for all images (extracts exact text from slides)
+python pipeline.py report.pdf --prompt-mode transcribe
+
 # Keep duplicates for manual review
 python pipeline.py report.pdf --keep-duplicates
 
@@ -319,15 +339,23 @@ python pipeline.py report.pdf --keep-duplicates
 python pipeline.py report.pdf --quiet
 ```
 
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--image-heavy-threshold` | `30` | Word count below which a page with images is classified as image-heavy (text stripped, Pixtral handles content) |
+| `--prompt-mode` | `describe` | `describe` for photos/diagrams, `transcribe` for slides with text/tables to extract exactly |
+| `--threshold` | `5` | Perceptual hash distance for image deduplication |
+| `--format` | `blockquote` | Description injection format: `blockquote`, `paragraph`, `section`, `inline` |
+
 ---
 
 ## 📦 Installation
 
 ```bash
 pip install -r requirements.txt
+playwright install chromium  # Required for web crawler
 ```
 
-Requires Python 3.9+. Set `SCALEWAY_API_KEY` environment variable for image description generation.
+Requires Python 3.9+. Set `SCALEWAY_API_KEY` environment variable for image description generation (or pass `--api-key` to the pipeline).
 
 ---
 

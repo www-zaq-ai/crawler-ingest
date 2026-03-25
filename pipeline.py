@@ -62,10 +62,12 @@ class PDFPipeline:
                           api_key: Optional[str] = None,
                           threshold: int = 5,
                           format_style: str = 'blockquote',
-                          keep_duplicates: bool = False) -> bool:
+                          keep_duplicates: bool = False,
+                          image_heavy_threshold: int = 30,
+                          prompt_mode: str = 'describe') -> bool:
         """
         Process a single PDF through the complete pipeline
-        
+
         Args:
             pdf_path: Path to PDF file
             output_md: Output markdown path (default: same name as PDF)
@@ -74,7 +76,9 @@ class PDFPipeline:
             threshold: Image similarity threshold
             format_style: Description format style
             keep_duplicates: Keep duplicate images (don't delete)
-        
+            image_heavy_threshold: Word count threshold for image-heavy page classification
+            prompt_mode: 'describe' or 'transcribe' — default Pixtral prompt mode
+
         Returns:
             True if successful
         """
@@ -101,11 +105,12 @@ class PDFPipeline:
         self.log(f"Images: {images_folder}")
         self.log(f"{'#'*60}")
         
-        # Step 1: Extract PDF with images
+        # Step 1: Extract PDF with images (page-aware)
         cmd = [
             self.python, self.scripts['pdf_to_md'],
             str(pdf_path), str(output_md),
-            '--with-images', '--images-dir', str(images_dir)
+            '--with-images', '--images-dir', str(images_dir),
+            '--image-heavy-threshold', str(image_heavy_threshold)
         ]
         if not self.run_command(cmd, "1. Extract PDF with images"):
             return False
@@ -136,11 +141,15 @@ class PDFPipeline:
             has_duplicates = True
         
         # Step 3: Get image descriptions with Pixtral
+        page_classification_file = images_folder / 'page_classification.json'
         cmd = [
             self.python, self.scripts['image_to_text'],
             '--folder', str(images_folder),
-            '--output', str(descriptions_json)
+            '--output', str(descriptions_json),
+            '--prompt-mode', prompt_mode
         ]
+        if page_classification_file.exists():
+            cmd.extend(['--page-classification', str(page_classification_file)])
         if api_key:
             cmd.extend(['--api-key', api_key])
         
@@ -189,10 +198,12 @@ class PDFPipeline:
                       api_key: Optional[str] = None,
                       threshold: int = 5,
                       format_style: str = 'blockquote',
-                      keep_duplicates: bool = False) -> dict:
+                      keep_duplicates: bool = False,
+                      image_heavy_threshold: int = 30,
+                      prompt_mode: str = 'describe') -> dict:
         """
         Process all PDFs in a folder
-        
+
         Args:
             input_folder: Folder containing PDF files
             output_folder: Folder for output markdown files
@@ -201,7 +212,9 @@ class PDFPipeline:
             threshold: Image similarity threshold
             format_style: Description format style
             keep_duplicates: Keep duplicate images
-        
+            image_heavy_threshold: Word count threshold for image-heavy page classification
+            prompt_mode: 'describe' or 'transcribe' — default Pixtral prompt mode
+
         Returns:
             Dict with processing results
         """
@@ -241,7 +254,9 @@ class PDFPipeline:
                 api_key=api_key,
                 threshold=threshold,
                 format_style=format_style,
-                keep_duplicates=keep_duplicates
+                keep_duplicates=keep_duplicates,
+                image_heavy_threshold=image_heavy_threshold,
+                prompt_mode=prompt_mode
             )
             
             results[pdf_file.name] = success
@@ -299,9 +314,13 @@ Environment:
                        help='Description format style (default: blockquote)')
     parser.add_argument('--keep-duplicates', action='store_true',
                        help='Keep duplicate images (don\'t delete them)')
+    parser.add_argument('--image-heavy-threshold', type=int, default=30,
+                       help='Word count below which a page with images is image-heavy (default: 30)')
+    parser.add_argument('--prompt-mode', choices=['describe', 'transcribe'], default='describe',
+                       help='Pixtral prompt mode: describe (default) or transcribe (for slides)')
     parser.add_argument('--quiet', action='store_true',
                        help='Suppress verbose output')
-    
+
     args = parser.parse_args()
     
     try:
@@ -316,7 +335,9 @@ Environment:
                 api_key=args.api_key,
                 threshold=args.threshold,
                 format_style=args.format_style,
-                keep_duplicates=args.keep_duplicates
+                keep_duplicates=args.keep_duplicates,
+                image_heavy_threshold=args.image_heavy_threshold,
+                prompt_mode=args.prompt_mode
             )
             
             # Check if any failed
@@ -334,7 +355,9 @@ Environment:
                 api_key=args.api_key,
                 threshold=args.threshold,
                 format_style=args.format_style,
-                keep_duplicates=args.keep_duplicates
+                keep_duplicates=args.keep_duplicates,
+                image_heavy_threshold=args.image_heavy_threshold,
+                prompt_mode=args.prompt_mode
             )
             
             if not success:
