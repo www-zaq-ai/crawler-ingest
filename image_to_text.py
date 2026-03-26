@@ -46,6 +46,53 @@ class PixtralImageProcessor:
         self.api_url = "https://api.scaleway.ai/v1/chat/completions"
         self.model = "pixtral-12b-2409"
     
+    @staticmethod
+    def _make_1px_jpeg_b64() -> str:
+        """Generate a 1x1 white JPEG in memory and return as base64."""
+        from io import BytesIO
+        from PIL import Image
+        buf = BytesIO()
+        Image.new('RGB', (32, 32), (255, 255, 255)).save(buf, format='JPEG')
+        return base64.b64encode(buf.getvalue()).decode()
+
+    def ping(self) -> bool:
+        """
+        Verify API connectivity by sending a 1x1 pixel image.
+
+        Returns:
+            True if the API responds successfully, raises on failure.
+        """
+        pixel_b64 = self._make_1px_jpeg_b64()
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Reply with OK."},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{pixel_b64}"
+                            },
+                        },
+                    ],
+                }
+            ],
+            "max_tokens": 50,
+        }
+
+        response = requests.post(self.api_url, headers=headers, json=payload)
+        if not response.ok:
+            raise ValueError(f"API error {response.status_code}: {response.text}")
+        return True
+
     def encode_image(self, image_path: str) -> str:
         """
         Encode image to base64
@@ -327,12 +374,19 @@ Environment:
                        '(auto-selects transcribe for image-heavy page images)')
     parser.add_argument('--api-key', help='Scaleway API key (or set SCALEWAY_API_KEY env var)')
     parser.add_argument('--no-clean', action='store_true', help='Skip post-processing cleanup of responses')
+    parser.add_argument('--ping', action='store_true', help='Send a 1-pixel image to verify API connectivity and exit')
 
     args = parser.parse_args()
 
     try:
         # Initialize processor
         processor = PixtralImageProcessor(api_key=args.api_key)
+
+        # Ping
+        if args.ping:
+            processor.ping()
+            print("OK")
+            sys.exit(0)
 
         # Process folder
         if args.folder:
