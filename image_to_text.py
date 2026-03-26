@@ -31,20 +31,24 @@ Be exhaustive with text transcription. Do not paraphrase visible text — copy i
 class PixtralImageProcessor:
     """Process images using Scaleway's Pixtral vision model"""
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None,
+                 api_url: Optional[str] = None,
+                 model: Optional[str] = None):
         """
         Initialize Pixtral processor
-        
+
         Args:
             api_key: Scaleway API key (or set SCALEWAY_API_KEY env var)
+            api_url: Override the default Scaleway API endpoint
+            model: Override the default model name
         """
         self.api_key = api_key or os.getenv('SCALEWAY_API_KEY')
         if not self.api_key:
             raise ValueError("API key required. Set SCALEWAY_API_KEY or pass api_key parameter")
-        
-        # Scaleway Pixtral endpoint
-        self.api_url = "https://api.scaleway.ai/v1/chat/completions"
-        self.model = "pixtral-12b-2409"
+
+        # Scaleway Pixtral endpoint (overridable)
+        self.api_url = api_url or "https://api.scaleway.ai/v1/chat/completions"
+        self.model = model or "pixtral-12b-2409"
     
     @staticmethod
     def _make_1px_jpeg_b64() -> str:
@@ -373,6 +377,8 @@ Environment:
     parser.add_argument('--page-classification', help='Path to page_classification.json from pdf_to_md.py '
                        '(auto-selects transcribe for image-heavy page images)')
     parser.add_argument('--api-key', help='Scaleway API key (or set SCALEWAY_API_KEY env var)')
+    parser.add_argument('--api-url', help='Override the default Scaleway API endpoint URL')
+    parser.add_argument('--model', help='Override the default model name (default: pixtral-12b-2409)')
     parser.add_argument('--no-clean', action='store_true', help='Skip post-processing cleanup of responses')
     parser.add_argument('--ping', action='store_true', help='Send a 1-pixel image to verify API connectivity and exit')
 
@@ -380,7 +386,11 @@ Environment:
 
     try:
         # Initialize processor
-        processor = PixtralImageProcessor(api_key=args.api_key)
+        processor = PixtralImageProcessor(
+            api_key=args.api_key,
+            api_url=args.api_url,
+            model=args.model,
+        )
 
         # Ping
         if args.ping:
