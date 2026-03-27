@@ -11,7 +11,9 @@ import base64
 import argparse
 from pathlib import Path
 from typing import List, Dict, Optional
-import requests
+
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
 
 DESCRIBE_PROMPT = """Describe this image concisely for document search and retrieval.
 Focus only on actual content present: visible text, data in tables/charts,
@@ -42,13 +44,19 @@ class PixtralImageProcessor:
             api_url: Override the default Scaleway API endpoint
             model: Override the default model name
         """
-        self.api_key = api_key or os.getenv('SCALEWAY_API_KEY')
-        if not self.api_key:
+        api_key = api_key or os.getenv('SCALEWAY_API_KEY')
+        if not api_key:
             raise ValueError("API key required. Set SCALEWAY_API_KEY or pass api_key parameter")
 
-        # Scaleway Pixtral endpoint (overridable)
-        self.api_url = api_url or "https://api.scaleway.ai/v1/chat/completions"
-        self.model = model or "pixtral-12b-2409"
+        base_url = api_url or "https://api.scaleway.ai/v1"
+        model = model or "pixtral-12b-2409"
+
+        self.llm = ChatOpenAI(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            max_tokens=500,
+        )
     
     @staticmethod
     def _make_1px_jpeg_b64() -> str:
@@ -67,34 +75,11 @@ class PixtralImageProcessor:
             True if the API responds successfully, raises on failure.
         """
         pixel_b64 = self._make_1px_jpeg_b64()
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Reply with OK."},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{pixel_b64}"
-                            },
-                        },
-                    ],
-                }
-            ],
-            "max_tokens": 50,
-        }
-
-        response = requests.post(self.api_url, headers=headers, json=payload)
-        if not response.ok:
-            raise ValueError(f"API error {response.status_code}: {response.text}")
+        message = HumanMessage(content=[
+            {"type": "text", "text": "Reply with OK."},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{pixel_b64}"}},
+        ])
+        self.llm.with_config({"max_tokens": 50}).invoke([message])
         return True
 
     def encode_image(self, image_path: str) -> str:
@@ -184,43 +169,13 @@ class PixtralImageProcessor:
         if not prompt:
             prompt = DESCRIBE_PROMPT
         
-        # Encode image
         base64_image = self.encode_image(image_path)
-        
-        # Prepare request
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
-            ],
-            "max_tokens": 500
-        }
-        
-        # Make request
-        response = requests.post(self.api_url, headers=headers, json=payload)
-        response.raise_for_status()
-        
-        result = response.json()
-        description = result['choices'][0]['message']['content']
+        message = HumanMessage(content=[
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
+        ])
+        response = self.llm.invoke([message])
+        description = response.content
         
         # Clean if requested
         if clean:
@@ -377,7 +332,7 @@ Environment:
     parser.add_argument('--page-classification', help='Path to page_classification.json from pdf_to_md.py '
                        '(auto-selects transcribe for image-heavy page images)')
     parser.add_argument('--api-key', help='Scaleway API key (or set SCALEWAY_API_KEY env var)')
-    parser.add_argument('--api-url', help='Override the default Scaleway API endpoint URL')
+    parser.add_argument('--api-url', help='Override the base API URL (e.g. https://api.scaleway.ai/v1)')
     parser.add_argument('--model', help='Override the default model name (default: pixtral-12b-2409)')
     parser.add_argument('--no-clean', action='store_true', help='Skip post-processing cleanup of responses')
     parser.add_argument('--ping', action='store_true', help='Send a 1-pixel image to verify API connectivity and exit')

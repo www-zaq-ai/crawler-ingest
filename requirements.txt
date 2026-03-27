@@ -20,3 +20,6 @@ requests
 beautifulsoup4
 markdownify
 playwright
+
+# Image-to-text (LangChain vision)
+langchain-openai
