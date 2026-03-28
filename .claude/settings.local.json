@@ -11,7 +11,17 @@
       "Bash(pip index:*)",
       "Bash(uvx serena-mcp-server:*)",
       "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(mkdir -p /Users/jad/Desktop/Jad/workspace/zaq/crawler-ingest/tests)",
+      "Bash(mv /Users/jad/Desktop/Jad/workspace/zaq/crawler-ingest/test_pdf_to_md.py /Users/jad/Desktop/Jad/workspace/zaq/crawler-ingest/tests/test_pdf_to_md.py)",
+      "Bash(asdf --version)",
+      "Bash(pyenv --version)",
+      "Bash(source venv/bin/activate)",
+      "Bash(pytest tests/test_pdf_to_md.py -v)",
+      "Bash(pytest tests/test_image_to_text.py tests/test_docx_to_md.py -v)",
+      "Bash(pytest tests/test_clean_md.py tests/test_image_dedup.py -v)",
+      "Bash(pytest tests/test_inject_descriptions.py tests/test_pipeline.py -v)",
+      "Bash(pytest tests/ -v)"
     ]
   }
 }

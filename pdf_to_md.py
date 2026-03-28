@@ -352,8 +352,14 @@ def pdf_to_markdown(pdf_path, output_path, write_images=False, images_dir=None,
     md_parts = []
     page_classification = {}
 
-    for chunk in page_chunks:
-        page_num = chunk['metadata']['page']         # 1-indexed (pymupdf4llm convention)
+    for i, chunk in enumerate(page_chunks):
+        # pymupdf4llm <0.0.17: chunk['metadata']['page'] (1-indexed)
+        # pymupdf4llm >=0.0.17: chunk['page'] (0-indexed, top-level)
+        meta_page = chunk.get('metadata', {}).get('page')
+        if meta_page is not None:
+            page_num = meta_page
+        else:
+            page_num = chunk.get('page', i) + 1
         fitz_page_idx = page_num - 1                  # 0-indexed for fitz lookups
         page_text = chunk['text']
 

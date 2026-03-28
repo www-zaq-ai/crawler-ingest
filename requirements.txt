@@ -1,6 +1,6 @@
 # PDF to Markdown pipeline
-pymupdf4llm
-pymupdf
+pymupdf4llm==1.27.2.2
+pymupdf==1.27.2.2
 
 # Docx to Markdown
 mammoth
