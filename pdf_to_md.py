@@ -136,6 +136,44 @@ def strip_image_overlap_text(page_text, overlap_texts):
     return '\n'.join(cleaned_lines)
 
 
+def extract_fullpage_scan_images(doc, image_path, page_idx, pdf_stem):
+    """
+    Extract full-page images that pymupdf4llm skips (e.g. scanned pages where
+    a single JPEG/image covers >85% of the page area).
+
+    Returns a list of absolute Path objects for the saved images.
+    """
+    page = doc[page_idx]
+    page_area = page.rect.get_area()
+    if page_area == 0:
+        return []
+
+    extracted = []
+    raw_images = page.get_images(full=True)
+
+    for img_idx, img_info in enumerate(page.get_image_info()):
+        bbox = fitz.Rect(img_info['bbox'])
+        if bbox.get_area() / page_area <= 0.85:
+            continue  # Not a full-page image
+
+        if img_idx >= len(raw_images):
+            continue
+        xref = raw_images[img_idx][0]
+        pix = fitz.Pixmap(doc, xref)
+
+        # Convert CMYK / non-RGB colorspaces to RGB
+        if pix.colorspace and pix.colorspace.n > 3:
+            pix = fitz.Pixmap(fitz.csRGB, pix)
+
+        filename = f"{pdf_stem}-p{page_idx + 1}-scan{img_idx}.png"
+        out_path = image_path / filename
+        pix.save(str(out_path))
+        extracted.append(out_path)
+        print(f"  Page {page_idx + 1}: extracted full-page scan image -> {filename}")
+
+    return extracted
+
+
 def reconstruct_page_tables(doc):
     """
     Use PyMuPDF coordinates to reconstruct table layouts that pymupdf4llm
@@ -345,9 +383,9 @@ def pdf_to_markdown(pdf_path, output_path, write_images=False, images_dir=None,
         print(f"  Found {total} text fragment(s) inside image regions across {len(overlap_text_by_page)} page(s)")
 
     # Reconstruct table layouts from coordinate analysis
+    # Keep doc open through the page loop — also needed for full-page scan extraction
     doc = fitz.open(str(pdf_path))
     reconstructed_pages = reconstruct_page_tables(doc)
-    doc.close()
 
     md_parts = []
     page_classification = {}
@@ -362,6 +400,13 @@ def pdf_to_markdown(pdf_path, output_path, write_images=False, images_dir=None,
             page_num = chunk.get('page', i) + 1
         fitz_page_idx = page_num - 1                  # 0-indexed for fitz lookups
         page_text = chunk['text']
+
+        # pymupdf4llm silently skips full-page images (scanned pages).
+        # Detect and extract them directly via fitz when write_images is enabled.
+        if not page_text.strip() and write_images and image_path:
+            scan_imgs = extract_fullpage_scan_images(doc, image_path, fitz_page_idx, pdf_path.stem)
+            for img_out_path in scan_imgs:
+                page_text += f"\n![scanned page]({img_out_path})\n"
 
         page_type, word_count = classify_page(page_text, image_heavy_threshold)
 
@@ -400,6 +445,8 @@ def pdf_to_markdown(pdf_path, output_path, write_images=False, images_dir=None,
                 page_text = strip_image_overlap_text(page_text, overlap_texts)
                 print(f"    Stripped {len(overlap_texts)} image-region text fragment(s)")
             md_parts.append(page_text)
+
+    doc.close()
 
     md_text = '\n\n'.join(md_parts)
 
