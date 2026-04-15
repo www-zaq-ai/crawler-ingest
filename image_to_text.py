@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 DESCRIBE_PROMPT = """Describe this image concisely for document search and retrieval.
 Focus only on actual content present: visible text, data in tables/charts,
@@ -35,7 +35,8 @@ class PixtralImageProcessor:
     
     def __init__(self, api_key: Optional[str] = None,
                  api_url: Optional[str] = None,
-                 model: Optional[str] = None):
+                 model: Optional[str] = None,
+                 system_prompt: Optional[str] = None):
         """
         Initialize Pixtral processor
 
@@ -43,6 +44,7 @@ class PixtralImageProcessor:
             api_key: Scaleway API key (or set SCALEWAY_API_KEY env var)
             api_url: Override the default Scaleway API endpoint
             model: Override the default model name
+            system_prompt: System prompt injected before every request (overrides none by default)
         """
         api_key = api_key or os.getenv('SCALEWAY_API_KEY')
         if not api_key:
@@ -57,6 +59,7 @@ class PixtralImageProcessor:
             base_url=base_url,
             max_tokens=500,
         )
+        self.system_prompt = system_prompt
     
     @staticmethod
     def _make_1px_jpeg_b64() -> str:
@@ -170,11 +173,12 @@ class PixtralImageProcessor:
             prompt = DESCRIBE_PROMPT
         
         base64_image = self.encode_image(image_path)
-        message = HumanMessage(content=[
+        human = HumanMessage(content=[
             {"type": "text", "text": prompt},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
         ])
-        response = self.llm.invoke([message])
+        messages = [SystemMessage(content=self.system_prompt), human] if self.system_prompt else [human]
+        response = self.llm.invoke(messages)
         description = response.content
         
         # Clean if requested
@@ -331,6 +335,8 @@ Environment:
                             'transcribe (extract exact text + structure, good for slides)')
     parser.add_argument('--page-classification', help='Path to page_classification.json from pdf_to_md.py '
                        '(auto-selects transcribe for image-heavy page images)')
+    parser.add_argument('--system-prompt', help='System prompt to inject before every request')
+    parser.add_argument('--system-prompt-file', help='Path to a file whose contents are used as the system prompt (use - to read from stdin)')
     parser.add_argument('--api-key', help='Scaleway API key (or set SCALEWAY_API_KEY env var)')
     parser.add_argument('--api-url', help='Override the base API URL (e.g. https://api.scaleway.ai/v1)')
     parser.add_argument('--model', help='Override the default model name (default: pixtral-12b-2409)')
@@ -340,11 +346,24 @@ Environment:
     args = parser.parse_args()
 
     try:
+        # Resolve system prompt — priority: --system-prompt-file > --system-prompt > env var
+        system_prompt = None
+        if args.system_prompt_file:
+            if args.system_prompt_file == '-':
+                system_prompt = sys.stdin.read().strip()
+            else:
+                system_prompt = Path(args.system_prompt_file).read_text(encoding='utf-8').strip()
+        elif args.system_prompt:
+            system_prompt = args.system_prompt
+        elif os.getenv('PIXTRAL_SYSTEM_PROMPT'):
+            system_prompt = os.getenv('PIXTRAL_SYSTEM_PROMPT').strip()
+
         # Initialize processor
         processor = PixtralImageProcessor(
             api_key=args.api_key,
             api_url=args.api_url,
             model=args.model,
+            system_prompt=system_prompt,
         )
 
         # Ping

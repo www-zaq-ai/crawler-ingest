@@ -5,7 +5,8 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from image_to_text import PixtralImageProcessor, DESCRIBE_PROMPT, TRANSCRIBE_PROMPT
+from image_to_text import PixtralImageProcessor, DESCRIBE_PROMPT, TRANSCRIBE_PROMPT, main
+from langchain_core.messages import HumanMessage, SystemMessage
 
 
 def _make_processor():
@@ -167,3 +168,160 @@ class TestGetImageDescription:
 
         result = self.p.get_image_description(str(img), clean=False)
         assert "Certainly" in result
+
+
+# ---------------------------------------------------------------------------
+# System prompt — processor-level behavior
+# ---------------------------------------------------------------------------
+
+class TestSystemPromptInjection:
+    def test_system_prompt_none_by_default(self):
+        p = _make_processor()
+        assert p.system_prompt is None
+
+    def test_system_prompt_stored_on_init(self):
+        with patch("image_to_text.ChatOpenAI"):
+            p = PixtralImageProcessor(api_key="fake", system_prompt="Be concise.")
+        assert p.system_prompt == "Be concise."
+
+    def test_system_message_prepended_when_set(self, tmp_path):
+        with patch("image_to_text.ChatOpenAI"):
+            p = PixtralImageProcessor(api_key="fake", system_prompt="Be concise.")
+        img = tmp_path / "test.png"
+        img.write_bytes(b"fakeimage")
+        p.llm.invoke = MagicMock(return_value=MagicMock(content="A chart."))
+
+        p.get_image_description(str(img))
+
+        messages = p.llm.invoke.call_args[0][0]
+        assert len(messages) == 2
+        assert isinstance(messages[0], SystemMessage)
+        assert messages[0].content == "Be concise."
+        assert isinstance(messages[1], HumanMessage)
+
+    def test_no_system_message_without_prompt(self, tmp_path):
+        p = _make_processor()
+        img = tmp_path / "test.png"
+        img.write_bytes(b"fakeimage")
+        p.llm.invoke = MagicMock(return_value=MagicMock(content="A chart."))
+
+        p.get_image_description(str(img))
+
+        messages = p.llm.invoke.call_args[0][0]
+        assert len(messages) == 1
+        assert isinstance(messages[0], HumanMessage)
+
+    def test_default_describe_prompt_used_when_no_system_prompt(self, tmp_path):
+        p = _make_processor()
+        img = tmp_path / "test.png"
+        img.write_bytes(b"fakeimage")
+        p.llm.invoke = MagicMock(return_value=MagicMock(content="A chart."))
+
+        p.get_image_description(str(img))
+
+        messages = p.llm.invoke.call_args[0][0]
+        assert len(messages) == 1
+        assert isinstance(messages[0], HumanMessage)
+        assert DESCRIBE_PROMPT in messages[0].content[0]["text"]
+
+    def test_system_prompt_multiline(self, tmp_path):
+        multiline = "Line one.\nLine two.\nLine three."
+        with patch("image_to_text.ChatOpenAI"):
+            p = PixtralImageProcessor(api_key="fake", system_prompt=multiline)
+        img = tmp_path / "test.png"
+        img.write_bytes(b"fakeimage")
+        p.llm.invoke = MagicMock(return_value=MagicMock(content="Result."))
+
+        p.get_image_description(str(img))
+
+        messages = p.llm.invoke.call_args[0][0]
+        assert messages[0].content == multiline
+
+
+# ---------------------------------------------------------------------------
+# System prompt — CLI resolution priority
+# ---------------------------------------------------------------------------
+
+class TestCliSystemPromptResolution:
+    """Verifies that the correct system_prompt value reaches PixtralImageProcessor."""
+
+    def _run_main(self, argv, tmp_path, monkeypatch=None, stdin_data=None):
+        """
+        Run main() with a real single-image arg and a mocked processor.
+        Returns the system_prompt kwarg that was passed to PixtralImageProcessor().
+        """
+        img = tmp_path / "test.png"
+        img.write_bytes(b"x")
+        full_argv = ["prog", str(img)] + argv
+
+        with patch("image_to_text.PixtralImageProcessor") as MockClass:
+            mock_instance = MagicMock()
+            mock_instance.get_image_description.return_value = "desc"
+            MockClass.return_value = mock_instance
+
+            with patch("sys.argv", full_argv):
+                if stdin_data is not None:
+                    with patch("sys.stdin") as mock_stdin:
+                        mock_stdin.read.return_value = stdin_data
+                        main()
+                else:
+                    main()
+
+        return MockClass.call_args.kwargs.get("system_prompt")
+
+    def test_inline_arg(self, tmp_path):
+        result = self._run_main(["--system-prompt", "Be precise."], tmp_path)
+        assert result == "Be precise."
+
+    def test_file_arg(self, tmp_path):
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("From file.")
+        result = self._run_main(["--system-prompt-file", str(prompt_file)], tmp_path)
+        assert result == "From file."
+
+    def test_file_strips_whitespace(self, tmp_path):
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("  From file.  \n")
+        result = self._run_main(["--system-prompt-file", str(prompt_file)], tmp_path)
+        assert result == "From file."
+
+    def test_stdin_dash(self, tmp_path):
+        result = self._run_main(
+            ["--system-prompt-file", "-"], tmp_path, stdin_data="  From stdin.  "
+        )
+        assert result == "From stdin."
+
+    def test_env_var(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PIXTRAL_SYSTEM_PROMPT", "From env.")
+        result = self._run_main([], tmp_path)
+        assert result == "From env."
+
+    def test_env_var_stripped(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PIXTRAL_SYSTEM_PROMPT", "  From env.  ")
+        result = self._run_main([], tmp_path)
+        assert result == "From env."
+
+    def test_file_takes_precedence_over_inline(self, tmp_path):
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("From file.")
+        result = self._run_main(
+            ["--system-prompt", "Inline.", "--system-prompt-file", str(prompt_file)], tmp_path
+        )
+        assert result == "From file."
+
+    def test_inline_takes_precedence_over_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PIXTRAL_SYSTEM_PROMPT", "From env.")
+        result = self._run_main(["--system-prompt", "Inline."], tmp_path)
+        assert result == "Inline."
+
+    def test_file_takes_precedence_over_env(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("PIXTRAL_SYSTEM_PROMPT", "From env.")
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("From file.")
+        result = self._run_main(["--system-prompt-file", str(prompt_file)], tmp_path)
+        assert result == "From file."
+
+    def test_none_when_nothing_set(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("PIXTRAL_SYSTEM_PROMPT", raising=False)
+        result = self._run_main([], tmp_path)
+        assert result is None
