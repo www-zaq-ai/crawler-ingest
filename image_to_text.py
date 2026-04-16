@@ -9,6 +9,7 @@ import sys
 import json
 import base64
 import argparse
+import time
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -178,8 +179,12 @@ class PixtralImageProcessor:
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
         ])
         messages = [SystemMessage(content=self.system_prompt), human] if self.system_prompt else [human]
+        print(f"  → Calling Pixtral API...", flush=True)
+        t0 = time.time()
         response = self.llm.invoke(messages)
+        elapsed = time.time() - t0
         description = response.content
+        print(f"  → Response received [{elapsed:.1f}s, {len(description)} chars]", flush=True)
         
         # Clean if requested
         if clean:
@@ -279,12 +284,16 @@ class PixtralImageProcessor:
                     img_prompt = default_prompt
                     mode_label = prompt_mode if not prompt else "custom"
 
-                print(f"[{idx}/{len(image_files)}] Processing: {img_path.name} ({mode_label})")
+                print(f"[{idx}/{len(image_files)}] {img_path.name} ({mode_label})", flush=True)
+                t0 = time.time()
                 description = self.get_image_description(str(img_path), img_prompt, clean=clean)
                 results[img_path.name] = description
-                print(f"  ✓ Done")
+                print(f"  ✓ Done [{time.time() - t0:.1f}s]", flush=True)
+            except TimeoutError as e:
+                print(f"  ✗ Timeout: {e}", flush=True)
+                results[img_path.name] = f"ERROR: timeout"
             except Exception as e:
-                print(f"  ✗ Error: {e}")
+                print(f"  ✗ Error ({type(e).__name__}): {e}", flush=True)
                 results[img_path.name] = f"ERROR: {str(e)}"
 
         print("-" * 60)
