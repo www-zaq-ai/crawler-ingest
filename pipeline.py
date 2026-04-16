@@ -7,9 +7,10 @@ Complete workflow: Extract PDF -> Remove duplicate images -> Get descriptions ->
 import sys
 import argparse
 import subprocess
+import time
+import os
 from pathlib import Path
 from typing import Optional
-import json
 
 
 class PDFPipeline:
@@ -33,28 +34,35 @@ class PDFPipeline:
             print(message)
     
     def run_command(self, cmd: list, step_name: str) -> bool:
-        """
-        Run a command and handle errors
-        
-        Args:
-            cmd: Command to run as list
-            step_name: Name of the step for logging
-        
-        Returns:
-            True if successful, False otherwise
-        """
         self.log(f"\n{'='*60}")
         self.log(f"STEP: {step_name}")
         self.log(f"{'='*60}")
-        
+
+        start = time.time()
         try:
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-            if self.verbose and result.stdout:
-                print(result.stdout)
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=env,
+            )
+            for line in process.stdout:
+                line = line.rstrip()
+                if line:
+                    print(line)
+            process.wait()
+            elapsed = time.time() - start
+            if process.returncode != 0:
+                print(f"✗ {step_name} failed (exit {process.returncode}) [{elapsed:.1f}s]")
+                return False
+            self.log(f"✓ {step_name} done [{elapsed:.1f}s]")
             return True
-        except subprocess.CalledProcessError as e:
-            print(f"✗ Error in {step_name}:")
-            print(e.stderr)
+        except Exception as e:
+            print(f"✗ Error in {step_name}: {e}")
             return False
     
     def process_single_pdf(self, pdf_path: str, output_md: Optional[str] = None,
@@ -166,9 +174,9 @@ class PDFPipeline:
             if not self.run_command(cmd, "4. Clean markdown (remove duplicates)"):
                 return False
         else:
-            self.log("\n{'='*60}")
+            self.log(f"\n{'='*60}")
             self.log("STEP: 4. Clean markdown (remove duplicates)")
-            self.log("{'='*60}")
+            self.log(f"{'='*60}")
             self.log("⚠ Skipping - no duplicates found")
         
         # Step 5: Inject image descriptions

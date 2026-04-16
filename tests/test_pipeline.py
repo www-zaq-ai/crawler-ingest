@@ -36,27 +36,32 @@ class TestLog:
 # PDFPipeline.run_command
 # ---------------------------------------------------------------------------
 
+def _mock_popen(returncode=0, lines=None):
+    """Return a Popen mock that yields lines and exits with returncode."""
+    mock_proc = MagicMock()
+    mock_proc.stdout.__iter__ = MagicMock(return_value=iter(lines or []))
+    mock_proc.wait.return_value = None
+    mock_proc.returncode = returncode
+    return mock_proc
+
+
 class TestRunCommand:
     def test_returns_true_on_success(self):
         p = _make_pipeline()
-        mock_result = MagicMock()
-        mock_result.stdout = ""
-        with patch("pipeline.subprocess.run", return_value=mock_result):
+        with patch("pipeline.subprocess.Popen", return_value=_mock_popen(0)):
             assert p.run_command(["echo", "hi"], "test step") is True
 
-    def test_returns_false_on_called_process_error(self):
+    def test_returns_false_on_nonzero_exit(self):
         p = _make_pipeline()
-        with patch("pipeline.subprocess.run",
-                   side_effect=subprocess.CalledProcessError(1, "cmd", stderr="oops")):
+        with patch("pipeline.subprocess.Popen", return_value=_mock_popen(1)):
             assert p.run_command(["bad"], "failing step") is False
 
-    def test_passes_check_true_to_subprocess(self):
+    def test_passes_env_with_pythonunbuffered(self):
         p = _make_pipeline()
-        mock_result = MagicMock(stdout="")
-        with patch("pipeline.subprocess.run", return_value=mock_result) as mock_run:
+        with patch("pipeline.subprocess.Popen", return_value=_mock_popen(0)) as mock_popen:
             p.run_command(["cmd"], "step")
-            _, kwargs = mock_run.call_args
-            assert kwargs.get("check") is True
+            _, kwargs = mock_popen.call_args
+            assert kwargs.get("env", {}).get("PYTHONUNBUFFERED") == "1"
 
 
 # ---------------------------------------------------------------------------
