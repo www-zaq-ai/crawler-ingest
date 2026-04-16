@@ -34,9 +34,7 @@ class PDFPipeline:
             print(message)
     
     def run_command(self, cmd: list, step_name: str) -> bool:
-        self.log(f"\n{'='*60}")
-        self.log(f"STEP: {step_name}")
-        self.log(f"{'='*60}")
+        self.log(f"\n--- {step_name} ---")
 
         start = time.time()
         try:
@@ -68,6 +66,8 @@ class PDFPipeline:
     def process_single_pdf(self, pdf_path: str, output_md: Optional[str] = None,
                           images_dir: str = './images',
                           api_key: Optional[str] = None,
+                          api_url: Optional[str] = None,
+                          model: Optional[str] = None,
                           threshold: int = 5,
                           format_style: str = 'blockquote',
                           keep_duplicates: bool = False,
@@ -80,7 +80,9 @@ class PDFPipeline:
             pdf_path: Path to PDF file
             output_md: Output markdown path (default: same name as PDF)
             images_dir: Base directory for images
-            api_key: Scaleway API key
+            api_key: API key for image description service
+            api_url: Override the image description API base URL
+            model: Override the image description model name
             threshold: Image similarity threshold
             format_style: Description format style
             keep_duplicates: Keep duplicate images (don't delete)
@@ -107,11 +109,7 @@ class PDFPipeline:
         descriptions_json = images_folder / 'descriptions.json'
         duplicate_mapping = images_folder / 'duplicate_mapping.txt'
         
-        self.log(f"\n{'#'*60}")
-        self.log(f"Processing: {pdf_path.name}")
-        self.log(f"Output: {output_md}")
-        self.log(f"Images: {images_folder}")
-        self.log(f"{'#'*60}")
+        self.log(f"\nProcessing: {pdf_path.name} → {output_md}")
         
         # Step 1: Extract PDF with images (page-aware)
         cmd = [
@@ -160,6 +158,10 @@ class PDFPipeline:
             cmd.extend(['--page-classification', str(page_classification_file)])
         if api_key:
             cmd.extend(['--api-key', api_key])
+        if api_url:
+            cmd.extend(['--api-url', api_url])
+        if model:
+            cmd.extend(['--model', model])
         
         if not self.run_command(cmd, "3. Extract text from images (Pixtral)"):
             return False
@@ -174,10 +176,7 @@ class PDFPipeline:
             if not self.run_command(cmd, "4. Clean markdown (remove duplicates)"):
                 return False
         else:
-            self.log(f"\n{'='*60}")
-            self.log("STEP: 4. Clean markdown (remove duplicates)")
-            self.log(f"{'='*60}")
-            self.log("⚠ Skipping - no duplicates found")
+            self.log("\n--- 4. Clean markdown (remove duplicates) --- ⚠ skipped (no duplicates)")
         
         # Step 5: Inject image descriptions
         cmd = [
@@ -190,20 +189,15 @@ class PDFPipeline:
             return False
         
         # Final summary
-        self.log(f"\n{'#'*60}")
-        self.log("✓ PIPELINE COMPLETED SUCCESSFULLY")
-        self.log(f"{'#'*60}")
-        self.log(f"📄 Clean markdown: {output_md}")
-        self.log(f"🖼️  Images: {images_folder}")
-        self.log(f"📝 Descriptions: {descriptions_json}")
-        if has_duplicates:
-            self.log(f"🔍 Duplicate mapping: {duplicate_mapping}")
+        self.log(f"\n✓ Done → {output_md}")
         
         return True
     
     def process_folder(self, input_folder: str, output_folder: str,
                       images_dir: str = './images',
                       api_key: Optional[str] = None,
+                      api_url: Optional[str] = None,
+                      model: Optional[str] = None,
                       threshold: int = 5,
                       format_style: str = 'blockquote',
                       keep_duplicates: bool = False,
@@ -216,7 +210,9 @@ class PDFPipeline:
             input_folder: Folder containing PDF files
             output_folder: Folder for output markdown files
             images_dir: Base directory for images
-            api_key: Scaleway API key
+            api_key: API key for image description service
+            api_url: Override the image description API base URL
+            model: Override the image description model name
             threshold: Image similarity threshold
             format_style: Description format style
             keep_duplicates: Keep duplicate images
@@ -249,9 +245,7 @@ class PDFPipeline:
         success_count = 0
         
         for idx, pdf_file in enumerate(pdf_files, 1):
-            self.log(f"\n\n{'█'*60}")
-            self.log(f"PROCESSING {idx}/{len(pdf_files)}: {pdf_file.name}")
-            self.log(f"{'█'*60}")
+            self.log(f"\n[{idx}/{len(pdf_files)}] {pdf_file.name}")
             
             output_md = output_path / pdf_file.with_suffix('.md').name
             
@@ -260,6 +254,8 @@ class PDFPipeline:
                 str(output_md),
                 images_dir=images_dir,
                 api_key=api_key,
+                api_url=api_url,
+                model=model,
                 threshold=threshold,
                 format_style=format_style,
                 keep_duplicates=keep_duplicates,
@@ -272,11 +268,7 @@ class PDFPipeline:
                 success_count += 1
         
         # Final summary
-        self.log(f"\n\n{'█'*60}")
-        self.log(f"BATCH PROCESSING COMPLETE")
-        self.log(f"{'█'*60}")
-        self.log(f"Success: {success_count}/{len(pdf_files)}")
-        self.log(f"Failed: {len(pdf_files) - success_count}/{len(pdf_files)}")
+        self.log(f"\nBatch complete: {success_count}/{len(pdf_files)} succeeded")
         
         return results
 
@@ -313,7 +305,9 @@ Environment:
     parser.add_argument('--output-folder', help='Folder for output markdown files')
     parser.add_argument('--images-dir', default='./images', 
                        help='Base directory for images (default: ./images)')
-    parser.add_argument('--api-key', help='Scaleway API key (or set SCALEWAY_API_KEY env var)')
+    parser.add_argument('--api-key', help='API key for image description service (or set SCALEWAY_API_KEY env var)')
+    parser.add_argument('--api-url', help='Override image description API base URL')
+    parser.add_argument('--model', help='Override image description model name')
     parser.add_argument('--threshold', type=int, default=5,
                        help='Image similarity threshold (default: 5)')
     parser.add_argument('--format', dest='format_style',
@@ -341,6 +335,8 @@ Environment:
                 args.output_folder,
                 images_dir=args.images_dir,
                 api_key=args.api_key,
+                api_url=args.api_url,
+                model=args.model,
                 threshold=args.threshold,
                 format_style=args.format_style,
                 keep_duplicates=args.keep_duplicates,
@@ -361,6 +357,8 @@ Environment:
                 output_md=args.output,
                 images_dir=args.images_dir,
                 api_key=args.api_key,
+                api_url=args.api_url,
+                model=args.model,
                 threshold=args.threshold,
                 format_style=args.format_style,
                 keep_duplicates=args.keep_duplicates,

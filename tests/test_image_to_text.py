@@ -169,6 +169,18 @@ class TestGetImageDescription:
         result = self.p.get_image_description(str(img), clean=False)
         assert "Certainly" in result
 
+    def test_log_includes_model_name(self, tmp_path, capsys):
+        img = tmp_path / "test.png"
+        img.write_bytes(b"fakeimage")
+
+        mock_response = MagicMock()
+        mock_response.content = "A chart."
+        self.p.llm.invoke = MagicMock(return_value=mock_response)
+        self.p.llm.model_name = "gpt-4o"
+
+        self.p.get_image_description(str(img))
+        assert "gpt-4o" in capsys.readouterr().out
+
 
 # ---------------------------------------------------------------------------
 # System prompt — processor-level behavior

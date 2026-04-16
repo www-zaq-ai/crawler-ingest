@@ -130,6 +130,31 @@ class TestProcessSinglePdf:
         # output md arg should be report.md
         assert any("report.md" in str(arg) for arg in first_call_cmd)
 
+    def _step3_cmd(self, tmp_path, **kwargs):
+        """Run process_single_pdf and return the step 3 (image_to_text) command."""
+        p, pdf, _ = self._patched_pipeline(tmp_path)
+        p.process_single_pdf(str(pdf), images_dir=str(tmp_path / "images"), **kwargs)
+        # Step 3 is the third run_command call (index 2)
+        return p.run_command.call_args_list[2][0][0]
+
+    def test_api_url_forwarded_to_image_to_text(self, tmp_path):
+        cmd = self._step3_cmd(tmp_path, api_url="https://custom.api/v1")
+        assert "--api-url" in cmd
+        assert "https://custom.api/v1" in cmd
+
+    def test_model_forwarded_to_image_to_text(self, tmp_path):
+        cmd = self._step3_cmd(tmp_path, model="gpt-4o")
+        assert "--model" in cmd
+        assert "gpt-4o" in cmd
+
+    def test_api_url_omitted_when_not_set(self, tmp_path):
+        cmd = self._step3_cmd(tmp_path)
+        assert "--api-url" not in cmd
+
+    def test_model_omitted_when_not_set(self, tmp_path):
+        cmd = self._step3_cmd(tmp_path)
+        assert "--model" not in cmd
+
 
 # ---------------------------------------------------------------------------
 # PDFPipeline.process_folder

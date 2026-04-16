@@ -179,12 +179,16 @@ class PixtralImageProcessor:
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
         ])
         messages = [SystemMessage(content=self.system_prompt), human] if self.system_prompt else [human]
-        print(f"  → Calling Pixtral API...", flush=True)
+        print(f"  → Calling API ({self.llm.model_name})...", flush=True)
         t0 = time.time()
-        response = self.llm.invoke(messages)
+        try:
+            response = self.llm.invoke(messages)
+        except Exception as e:
+            elapsed = time.time() - t0
+            print(f"  ✗ API call failed [{elapsed:.1f}s]: {type(e).__name__}: {e}", flush=True)
+            raise
         elapsed = time.time() - t0
         description = response.content
-        print(f"  → Response received [{elapsed:.1f}s, {len(description)} chars]", flush=True)
         
         # Clean if requested
         if clean:
@@ -270,13 +274,10 @@ class PixtralImageProcessor:
         else:
             default_prompt = prompt
 
-        print("-" * 60)
-
         results = {}
 
         for idx, img_path in enumerate(image_files, 1):
             try:
-                # Use transcribe prompt for images from image-heavy pages
                 if img_path.name in image_heavy_set:
                     img_prompt = TRANSCRIBE_PROMPT
                     mode_label = "transcribe"
@@ -288,16 +289,16 @@ class PixtralImageProcessor:
                 t0 = time.time()
                 description = self.get_image_description(str(img_path), img_prompt, clean=clean)
                 results[img_path.name] = description
-                print(f"  ✓ Done [{time.time() - t0:.1f}s]", flush=True)
+                elapsed = time.time() - t0
+                print(f"  ✓ Done [{elapsed:.1f}s, {len(description)} chars]", flush=True)
             except TimeoutError as e:
                 print(f"  ✗ Timeout: {e}", flush=True)
-                results[img_path.name] = f"ERROR: timeout"
+                results[img_path.name] = "ERROR: timeout"
             except Exception as e:
-                print(f"  ✗ Error ({type(e).__name__}): {e}", flush=True)
                 results[img_path.name] = f"ERROR: {str(e)}"
 
-        print("-" * 60)
-        print(f"Completed: {len([v for v in results.values() if not v.startswith('ERROR')])}/{len(image_files)}")
+        success = len([v for v in results.values() if not v.startswith("ERROR")])
+        print(f"Completed: {success}/{len(image_files)}", flush=True)
 
         # Save results
         if output_file:
@@ -383,18 +384,10 @@ Environment:
 
         # Process folder
         if args.folder:
-            results = processor.process_folder(args.folder, args.output, args.prompt,
-                                             clean=not args.no_clean,
-                                             prompt_mode=args.prompt_mode,
-                                             page_classification_path=args.page_classification)
-            
-            # Display sample results
-            if results:
-                print("\nSample descriptions:")
-                print("=" * 60)
-                for img_name, desc in list(results.items())[:3]:
-                    print(f"\n{img_name}:")
-                    print(desc[:200] + "..." if len(desc) > 200 else desc)
+            processor.process_folder(args.folder, args.output, args.prompt,
+                                      clean=not args.no_clean,
+                                      prompt_mode=args.prompt_mode,
+                                      page_classification_path=args.page_classification)
         
         # Process single image
         elif args.image:
