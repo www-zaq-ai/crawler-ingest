@@ -15,6 +15,7 @@ A pipeline that converts PDFs into clean, vector-DB-ready markdown — extractin
 - **Page separators** — `<!-- page: N -->` comments for downstream chunkers
 - **DOCX → Markdown** conversion using mammoth + python-docx (tables, headings, lists)
 - **XLSX → Markdown** conversion using pandas (multi-sheet, natural-language sentences)
+- **PPTX → Markdown** conversion using markitdown (slide text, titles, speaker notes)
 - **Image deduplication** using perceptual hashing
 - **AI-powered image descriptions** via Pixtral API with describe/transcribe prompt modes
 - **Automated cleanup** of duplicate references in markdown
@@ -71,6 +72,16 @@ python xlsx_to_md.py report.xlsx
 
 # Entire folder
 python xlsx_to_md.py --input-folder ./sheets --output-folder ./markdown
+```
+
+### Convert PPTX files
+
+```bash
+# Single file
+python pptx_to_md.py slides.pptx
+
+# Entire folder
+python pptx_to_md.py --input-folder ./decks --output-folder ./markdown
 ```
 
 ---
@@ -182,6 +193,29 @@ python docx_to_md.py report.docx --quiet
 - Headings (H1–H4), paragraphs, bullet and numbered lists
 - Tables → proper `| col | col |` markdown tables
 - Inline formatting: bold, italic, inline code
+- Folder mode with sub-folder structure preservation
+
+### PPTX → Markdown
+
+Converts PowerPoint presentations to markdown using **markitdown**.
+
+```bash
+# Single file
+python pptx_to_md.py slides.pptx
+
+# Single file with custom output path
+python pptx_to_md.py slides.pptx --output slides.md
+
+# Entire folder (preserves sub-folder structure)
+python pptx_to_md.py --input-folder ./decks --output-folder ./markdown
+
+# Quiet mode
+python pptx_to_md.py slides.pptx --quiet
+```
+
+**What it handles:**
+- Slide titles and body text
+- Speaker notes
 - Folder mode with sub-folder structure preservation
 
 ### XLSX → Markdown

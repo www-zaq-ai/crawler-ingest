@@ -3,23 +3,26 @@ pymupdf4llm==1.27.2.2
 pymupdf==1.27.2.2
 
 # Docx to Markdown
-mammoth
-python-docx
+mammoth==1.12.0
+python-docx==1.2.0
 
 # XLSX to Markdown
-pandas 
-openpyxl 
-tabulate
+pandas==3.0.1
+openpyxl==3.1.5
+tabulate==0.10.0
 
 # Image processing & deduplication
-Pillow
-imagehash
+Pillow==12.1.1
+imagehash==4.3.2
 
 # Web crawler
-requests
-beautifulsoup4
-markdownify
-playwright
+requests==2.33.0
+beautifulsoup4==4.14.3
+markdownify==1.2.2
+playwright==1.58.0
 
 # Image-to-text (LangChain vision)
-langchain-openai
+langchain-openai==1.1.12
+
+# PowerPoint to Markdown
+markitdown[pptx]==0.1.5
