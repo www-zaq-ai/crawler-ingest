@@ -5,7 +5,14 @@ import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from image_to_text import PixtralImageProcessor, DESCRIBE_PROMPT, TRANSCRIBE_PROMPT, main
+from image_to_text import (
+    PixtralImageProcessor,
+    DESCRIBE_PROMPT,
+    TRANSCRIBE_PROMPT,
+    PROGRESS_SENTINEL,
+    emit_progress,
+    main,
+)
 from langchain_core.messages import HumanMessage, SystemMessage
 
 
@@ -337,3 +344,130 @@ class TestCliSystemPromptResolution:
         monkeypatch.delenv("PIXTRAL_SYSTEM_PROMPT", raising=False)
         result = self._run_main([], tmp_path)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# emit_progress
+# ---------------------------------------------------------------------------
+
+def _parse_progress_lines(stdout: str):
+    """Extract and JSON-decode every ZAQ_PROGRESS line from captured stdout."""
+    events = []
+    for line in stdout.splitlines():
+        if line.startswith(PROGRESS_SENTINEL):
+            payload = line[len(PROGRESS_SENTINEL):].strip()
+            events.append(json.loads(payload))
+    return events
+
+
+class TestEmitProgress:
+    def test_prefixes_sentinel_and_emits_valid_json(self, capsys):
+        emit_progress("image_to_text", 2, 5, label="figure-2.png")
+        events = _parse_progress_lines(capsys.readouterr().out)
+        assert events == [
+            {
+                "stage": "image_to_text",
+                "current": 2,
+                "total": 5,
+                "status": "processing",
+                "label": "figure-2.png",
+            }
+        ]
+
+    def test_defaults_status_to_processing(self, capsys):
+        emit_progress("image_to_text", 1, 3)
+        events = _parse_progress_lines(capsys.readouterr().out)
+        assert events[0]["status"] == "processing"
+
+    def test_omits_label_when_not_given(self, capsys):
+        emit_progress("image_to_text", 3, 3, status="completed")
+        events = _parse_progress_lines(capsys.readouterr().out)
+        assert "label" not in events[0]
+        assert events[0]["status"] == "completed"
+
+    def test_preserves_unicode_label(self, capsys):
+        emit_progress("image_to_text", 1, 1, label="schéma-é.png")
+        events = _parse_progress_lines(capsys.readouterr().out)
+        assert events[0]["label"] == "schéma-é.png"
+
+
+# ---------------------------------------------------------------------------
+# process_folder — progress emission
+# ---------------------------------------------------------------------------
+
+class TestProcessFolderProgress:
+    def _processor_with_stub(self):
+        p = _make_processor()
+        p.get_image_description = MagicMock(return_value="a description")
+        return p
+
+    def test_emits_started_processing_and_completed(self, tmp_path, capsys):
+        for name in ("a.png", "b.png"):
+            (tmp_path / name).write_bytes(b"x")
+
+        p = self._processor_with_stub()
+        p.process_folder(str(tmp_path))
+
+        events = _parse_progress_lines(capsys.readouterr().out)
+        statuses = [e["status"] for e in events]
+        assert statuses == ["started", "processing", "processing", "completed"]
+
+    def test_started_event_carries_total(self, tmp_path, capsys):
+        for name in ("a.png", "b.png", "c.png"):
+            (tmp_path / name).write_bytes(b"x")
+
+        p = self._processor_with_stub()
+        p.process_folder(str(tmp_path))
+
+        events = _parse_progress_lines(capsys.readouterr().out)
+        started = events[0]
+        assert started == {
+            "stage": "image_to_text",
+            "current": 0,
+            "total": 3,
+            "status": "started",
+        }
+
+    def test_processing_events_are_labeled_and_counted(self, tmp_path, capsys):
+        (tmp_path / "only.png").write_bytes(b"x")
+
+        p = self._processor_with_stub()
+        p.process_folder(str(tmp_path))
+
+        events = _parse_progress_lines(capsys.readouterr().out)
+        processing = [e for e in events if e["status"] == "processing"]
+        assert len(processing) == 1
+        assert processing[0]["current"] == 1
+        assert processing[0]["total"] == 1
+        assert processing[0]["label"] == "only.png"
+
+    def test_completed_event_reaches_total(self, tmp_path, capsys):
+        for name in ("a.png", "b.png"):
+            (tmp_path / name).write_bytes(b"x")
+
+        p = self._processor_with_stub()
+        p.process_folder(str(tmp_path))
+
+        events = _parse_progress_lines(capsys.readouterr().out)
+        completed = events[-1]
+        assert completed["status"] == "completed"
+        assert completed["current"] == completed["total"] == 2
+
+    def test_no_progress_when_folder_empty(self, tmp_path, capsys):
+        p = self._processor_with_stub()
+        p.process_folder(str(tmp_path))
+
+        events = _parse_progress_lines(capsys.readouterr().out)
+        assert events == []
+
+    def test_progress_emitted_even_when_image_errors(self, tmp_path, capsys):
+        (tmp_path / "boom.png").write_bytes(b"x")
+
+        p = _make_processor()
+        p.get_image_description = MagicMock(side_effect=RuntimeError("api down"))
+        p.process_folder(str(tmp_path))
+
+        events = _parse_progress_lines(capsys.readouterr().out)
+        statuses = [e["status"] for e in events]
+        # started + processing fire before the error; completed still fires after.
+        assert statuses == ["started", "processing", "completed"]

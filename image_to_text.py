@@ -30,6 +30,35 @@ Extract ALL of the following if present:
 
 Be exhaustive with text transcription. Do not paraphrase visible text — copy it exactly."""
 
+# Sentinel prefix for machine-readable progress lines. The Elixir Port runner
+# (Zaq.Ingestion.Python.Runner) reads stdout line-by-line and forwards any line
+# starting with this token as a structured ingestion-progress event. Ordinary
+# human-readable prints are ignored by that parser, so emitting progress is
+# additive and safe to interleave with existing logging.
+PROGRESS_SENTINEL = "ZAQ_PROGRESS"
+
+
+def emit_progress(stage: str, current: int, total: int,
+                  label: Optional[str] = None, status: str = "processing") -> None:
+    """Emit a single machine-readable progress line on stdout.
+
+    Args:
+        stage: Pipeline stage name (e.g. "image_to_text").
+        current: Items completed/started so far (0-based start, total at end).
+        total: Total number of items for this stage.
+        label: Optional human-friendly item name (e.g. the image filename).
+        status: One of "started", "processing", "completed".
+    """
+    payload = {
+        "stage": stage,
+        "current": current,
+        "total": total,
+        "status": status,
+    }
+    if label is not None:
+        payload["label"] = label
+    print(f"{PROGRESS_SENTINEL} {json.dumps(payload, ensure_ascii=False)}", flush=True)
+
 
 class PixtralImageProcessor:
     """Process images using Scaleway's Pixtral vision model"""
@@ -189,7 +218,17 @@ class PixtralImageProcessor:
             raise
         elapsed = time.time() - t0
         description = response.content
-        
+
+        # Reasoning models (e.g. nemotron-*-reasoning) return an empty content field
+        # and put the actual answer in additional_kwargs instead.
+        if not description:
+            ak = getattr(response, "additional_kwargs", {}) or {}
+            description = (
+                ak.get("reasoning_content")
+                or ak.get("thinking")
+                or ""
+            )
+
         # Clean if requested
         if clean:
             description = self.clean_description(description)
@@ -264,6 +303,7 @@ class PixtralImageProcessor:
             return {}
 
         print(f"Found {len(image_files)} image(s)")
+        emit_progress("image_to_text", 0, len(image_files), status="started")
 
         # Load page classification for per-image prompt selection
         image_heavy_set = self._load_image_heavy_set(page_classification_path)
@@ -285,6 +325,7 @@ class PixtralImageProcessor:
                     img_prompt = default_prompt
                     mode_label = prompt_mode if not prompt else "custom"
 
+                emit_progress("image_to_text", idx, len(image_files), label=img_path.name)
                 print(f"[{idx}/{len(image_files)}] {img_path.name} ({mode_label})", flush=True)
                 t0 = time.time()
                 description = self.get_image_description(str(img_path), img_prompt, clean=clean)
@@ -299,6 +340,9 @@ class PixtralImageProcessor:
 
         success = len([v for v in results.values() if not v.startswith("ERROR")])
         print(f"Completed: {success}/{len(image_files)}", flush=True)
+        emit_progress(
+            "image_to_text", len(image_files), len(image_files), status="completed"
+        )
 
         # Save results
         if output_file:
