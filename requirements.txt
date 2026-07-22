@@ -6,14 +6,9 @@
 opendataloader-pdf==2.5.0
 jdk4py==25.0.2.1
 
-# Docx to Markdown
-mammoth==1.12.0
-python-docx==1.2.0
-
-# XLSX to Markdown
-pandas==3.0.1
-openpyxl==3.1.5
-tabulate==0.10.0
+# DOCX / XLSX / XLS / CSV / PPTX to Markdown
+# Extras pull the format backends (mammoth, pandas+openpyxl, xlrd, python-pptx).
+markitdown[docx,pptx,xlsx,xls]==0.1.5
 
 # Image processing & deduplication
 Pillow==12.1.1
@@ -27,6 +22,3 @@ playwright==1.58.0
 
 # Image-to-text (LangChain vision)
 langchain-openai==1.1.12
-
-# PowerPoint to Markdown
-markitdown[pptx]==0.1.5
