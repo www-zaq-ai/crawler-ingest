@@ -1,6 +1,10 @@
 # PDF to Markdown pipeline
-pymupdf4llm==1.27.2.2
-pymupdf==1.27.2.2
+# opendataloader-pdf runs a bundled JAR and needs a JRE 11+. Deployment images
+# ship no system Java, so jdk4py provides one as a pip wheel (~94 MB) and
+# pdf_to_md.py points the loader at it. Drop jdk4py only if every runtime
+# environment is guaranteed to have its own JRE.
+opendataloader-pdf==2.5.0
+jdk4py==25.0.2.1
 
 # Docx to Markdown
 mammoth==1.12.0

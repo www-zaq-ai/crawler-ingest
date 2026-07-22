@@ -1,19 +1,70 @@
 #!/usr/bin/env python3
 """
-PDF to Markdown Converter using PyMuPDF4LLM
+PDF to Markdown Converter using Open Data Loader
 Extracts text, tables, and images from PDF files with proper formatting
 Optimized for RAG/LLM applications
+
+Open Data Loader ships a Python API (`opendataloader_pdf.convert`) over a
+bundled extraction engine. A JRE 11+ must be on PATH — see README.
 """
 
-import pymupdf4llm
-import pymupdf as fitz
-import sys
+import os
 import re
+import sys
 import json
+import shutil
 import argparse
+import tempfile
 from pathlib import Path
 
+
+def ensure_java_runtime():
+    """
+    Make a JVM reachable to Open Data Loader, which shells out to bare `java`.
+
+    Deployment containers install this pipeline with `pip install -r
+    requirements.txt` and carry no system JRE, so we fall back to the
+    pip-installed runtime from `jdk4py`. A system java, if present, wins —
+    an operator who installed one meant it to be used.
+
+    Returns:
+        The path to the java binary that will be used, or None if the system
+        one is already on PATH.
+    """
+    if shutil.which('java'):
+        return None
+
+    try:
+        import jdk4py
+    except ImportError:
+        raise RuntimeError(
+            'No Java runtime found. Open Data Loader needs a JRE 11+.\n'
+            'Install one system-wide, or `pip install jdk4py` to get a '
+            'self-contained runtime (it is in requirements.txt).'
+        )
+
+    java_bin = Path(jdk4py.JAVA)
+    os.environ['JAVA_HOME'] = str(jdk4py.JAVA_HOME)
+    os.environ['PATH'] = f'{java_bin.parent}{os.pathsep}' + os.environ.get('PATH', '')
+    return java_bin
+
+
+# Must run before opendataloader_pdf resolves `java` from PATH.
+ensure_java_runtime()
+
+import opendataloader_pdf  # noqa: E402  (import follows the java-path shim)
+
 IMAGE_HEAVY_THRESHOLD = 30
+
+# Emitted by Open Data Loader between pages; also the marker downstream
+# steps (clean_md, inject_descriptions) key on.
+PAGE_SEPARATOR_TEMPLATE = '<!-- page: %page-number% -->'
+PAGE_SEPARATOR_RE = re.compile(r'^<!--\s*page:\s*(\d+)\s*-->\s*$', re.MULTILINE)
+
+# Open Data Loader writes refs as ![](<path with spaces.png>). The angle
+# brackets are legal CommonMark but break the plain !\[(.*?)\]\((.*?)\)
+# regexes used by clean_md.py / inject_descriptions.py, so we normalise them.
+IMAGE_REF_RE = re.compile(r'!\[([^\]]*)\]\(\s*<?([^)>]+)>?\s*\)')
 
 
 def classify_page(page_text, threshold=IMAGE_HEAVY_THRESHOLD):
@@ -46,301 +97,129 @@ def strip_text_keep_images(page_text):
     return '\n'.join(image_lines)
 
 
-def get_image_overlap_text(pdf_path):
+def normalize_image_refs(md_text, base_dir, image_dir=None):
     """
-    Use PyMuPDF to find text spans that overlap with image bounding boxes.
+    Rewrite Open Data Loader image references into the form downstream steps
+    expect: ![alt](/absolute/path.png), with no angle brackets.
 
-    Returns:
-        Dict mapping 1-indexed page numbers to sets of text strings
-        that are inside image regions.
-    """
-    doc = fitz.open(str(pdf_path))
-    overlap_text_by_page = {}
-
-    for page_idx in range(len(doc)):
-        page = doc[page_idx]
-
-        # Get image bounding boxes
-        image_rects = []
-        for img_info in page.get_image_info():
-            bbox = img_info.get('bbox')
-            if bbox:
-                image_rects.append(fitz.Rect(bbox))
-
-        if not image_rects:
-            continue
-
-        # Get text blocks with positions
-        text_dict = page.get_text("dict")
-        overlap_texts = set()
-
-        for block in text_dict.get("blocks", []):
-            if block.get("type") != 0:  # 0 = text block
-                continue
-            block_rect = fitz.Rect(block["bbox"])
-
-            for img_rect in image_rects:
-                if block_rect.intersects(img_rect):
-                    # Collect all text spans from this block
-                    for line in block.get("lines", []):
-                        for span in line.get("spans", []):
-                            text = span["text"].strip()
-                            if text:
-                                overlap_texts.add(text)
-                    break
-
-        if overlap_texts:
-            overlap_text_by_page[page_idx + 1] = overlap_texts  # 1-indexed
-
-    doc.close()
-    return overlap_text_by_page
-
-
-def strip_image_overlap_text(page_text, overlap_texts):
-    """
-    Remove lines from markdown whose content matches text found inside image regions.
-    Strips markdown formatting before matching.
+    The loader emits refs relative to its *output* dir, echoing only the last
+    component of --image-dir (e.g. ![](<good/imageFile1.png>)) — so those paths
+    do not resolve to where the files were actually written. Since the loader
+    writes every image flat into --image-dir, we re-anchor each ref onto
+    image_dir by basename.
 
     Args:
-        page_text: Markdown text for a page
-        overlap_texts: Set of raw text strings found inside image bounding boxes
+        md_text: Markdown emitted by Open Data Loader
+        base_dir: Directory the emitted relative paths nominally resolve
+                  against (the loader's output dir)
+        image_dir: Directory the images were actually written to. When given,
+                   refs are re-anchored here by filename.
 
     Returns:
-        Cleaned markdown text
+        Markdown with every image reference rewritten to an absolute path.
     """
-    if not overlap_texts:
-        return page_text
+    base_dir = Path(base_dir)
+    image_dir = Path(image_dir) if image_dir else None
 
-    lines = page_text.split('\n')
-    cleaned_lines = []
+    def _rewrite(match):
+        alt, raw_path = match.group(1), match.group(2).strip()
+        path = Path(raw_path)
+        if image_dir is not None:
+            path = image_dir / path.name
+        elif not path.is_absolute():
+            path = (base_dir / path).resolve()
+        return f'![{alt}]({path})'
 
-    for line in lines:
-        # Keep image references
-        if re.search(r'!\[.*?\]\(.*?\)', line):
-            cleaned_lines.append(line)
-            continue
-
-        # Strip markdown formatting to get raw text for matching
-        raw = line.strip()
-        raw = re.sub(r'\*\*(.+?)\*\*', r'\1', raw)  # bold
-        raw = re.sub(r'_(.+?)_', r'\1', raw)          # italic
-        raw = re.sub(r'\*(.+?)\*', r'\1', raw)        # italic alt
-        raw = raw.strip('_* ')
-
-        # Check if this raw text matches any image-overlap text
-        if raw and raw in overlap_texts:
-            continue  # skip this line
-
-        cleaned_lines.append(line)
-
-    return '\n'.join(cleaned_lines)
+    return IMAGE_REF_RE.sub(_rewrite, md_text)
 
 
-def extract_fullpage_scan_images(doc, image_path, page_idx, pdf_stem):
+def split_pages(md_text):
     """
-    Extract full-page images that pymupdf4llm skips (e.g. scanned pages where
-    a single JPEG/image covers >85% of the page area).
+    Split loader markdown into pages on the page-separator comment.
 
-    Returns a list of absolute Path objects for the saved images.
+    Returns:
+        List of (page_num, page_text) tuples, 1-indexed. Content appearing
+        before the first separator is attributed to page 1.
     """
-    page = doc[page_idx]
-    page_area = page.rect.get_area()
-    if page_area == 0:
-        return []
+    matches = list(PAGE_SEPARATOR_RE.finditer(md_text))
 
-    extracted = []
-    raw_images = page.get_images(full=True)
+    if not matches:
+        # No separators emitted (e.g. single-page doc) — treat as one page
+        return [(1, md_text.strip())] if md_text.strip() else []
 
-    for img_idx, img_info in enumerate(page.get_image_info()):
-        bbox = fitz.Rect(img_info['bbox'])
-        if bbox.get_area() / page_area <= 0.85:
-            continue  # Not a full-page image
+    pages = []
 
-        if img_idx >= len(raw_images):
-            continue
-        xref = raw_images[img_idx][0]
-        pix = fitz.Pixmap(doc, xref)
+    # Any preamble before the first separator belongs to the first page
+    preamble = md_text[:matches[0].start()].strip()
 
-        # Convert CMYK / non-RGB colorspaces to RGB
-        if pix.colorspace and pix.colorspace.n > 3:
-            pix = fitz.Pixmap(fitz.csRGB, pix)
+    for i, match in enumerate(matches):
+        page_num = int(match.group(1))
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(md_text)
+        page_text = md_text[match.end():end].strip()
 
-        filename = f"{pdf_stem}-p{page_idx + 1}-scan{img_idx}.png"
-        out_path = image_path / filename
-        pix.save(str(out_path))
-        extracted.append(out_path)
-        print(f"  Page {page_idx + 1}: extracted full-page scan image -> {filename}")
+        if i == 0 and preamble:
+            page_text = f'{preamble}\n\n{page_text}'.strip()
 
-    return extracted
+        pages.append((page_num, page_text))
+
+    return pages
 
 
-def reconstruct_page_tables(doc):
+def run_open_data_loader(pdf_path, output_dir, image_dir=None):
     """
-    Use PyMuPDF coordinates to reconstruct table layouts that pymupdf4llm
-    reads as disconnected columns. Groups text lines by y-position to pair
-    labels with their values.
-
-    Detects layout zones (margins, side panels) and excludes them from the
-    main table reconstruction to avoid cross-contamination.
+    Invoke Open Data Loader and return the markdown it produced.
 
     Args:
-        doc: Open fitz.Document
+        pdf_path: Path to the source PDF
+        output_dir: Directory the loader writes its .md into
+        image_dir: If given, extract images as files into this directory
 
     Returns:
-        Dict mapping 0-indexed page numbers to reconstructed markdown text.
-        Only includes pages where multi-column table layout was detected.
+        The markdown text.
+
+    Raises:
+        RuntimeError: If the loader produced no markdown file.
     """
-    from collections import Counter
+    pdf_path = Path(pdf_path)
+    output_dir = Path(output_dir)
 
-    Y_TOLERANCE = 4.0       # Points tolerance for same-row grouping
-    GAP_THRESHOLD = 10.0    # Minimum x-gap between columns
-    MIN_TABLE_ROWS = 3      # Minimum paired rows to consider it a table
+    kwargs = {
+        'input_path': str(pdf_path),
+        'output_dir': str(output_dir),
+        'format': 'markdown',
+        'quiet': True,
+        'markdown_page_separator': PAGE_SEPARATOR_TEMPLATE,
+    }
 
-    reconstructed = {}
+    if image_dir:
+        # 'external' writes real image files; 'embedded' would inline base64
+        # data URIs, which the dedup/vision steps cannot open.
+        kwargs['image_output'] = 'external'
+        kwargs['image_format'] = 'png'
+        kwargs['image_dir'] = str(Path(image_dir))
+    else:
+        kwargs['image_output'] = 'off'
 
-    for page_idx in range(len(doc)):
-        page = doc[page_idx]
-        page_width = page.rect.width
-        text_dict = page.get_text("dict")
+    opendataloader_pdf.convert(**kwargs)
 
-        # Collect all text lines with bounding boxes
-        all_lines = []
-        for block in text_dict.get("blocks", []):
-            if block.get("type") != 0:
-                continue
-            for line_data in block.get("lines", []):
-                text = " ".join(s["text"] for s in line_data["spans"]).strip()
-                if not text:
-                    continue
-                bbox = line_data["bbox"]
-                all_lines.append({
-                    "text": text,
-                    "x0": bbox[0],
-                    "x1": bbox[2],
-                    "y_center": (bbox[1] + bbox[3]) / 2,
-                })
+    md_file = output_dir / f'{pdf_path.stem}.md'
+    if not md_file.exists():
+        # Fall back to whatever single .md landed there
+        produced = list(output_dir.glob('*.md'))
+        if not produced:
+            raise RuntimeError(
+                f'Open Data Loader produced no markdown for {pdf_path.name}'
+            )
+        md_file = produced[0]
 
-        if not all_lines:
-            continue
-
-        # Detect layout zones by clustering x-positions into bins
-        # This separates margin text, main content, and side panels
-        x_starts = [l["x0"] for l in all_lines]
-        x_bins = Counter(round(x / 50) * 50 for x in x_starts)
-
-        # Find the main content zone: the x-range containing the most text
-        # Typically the center of the page, excluding far-left margins and far-right panels
-        main_bins = sorted(x_bins.keys())
-
-        # Detect side panel: a cluster of text near the right edge (>75% of page width)
-        side_panel_threshold = page_width * 0.75
-        margin_threshold = page_width * 0.07  # ~40pt for typical pages
-
-        # Filter to main content zone (exclude margins and side panels)
-        content_lines = [
-            l for l in all_lines
-            if l["x0"] >= margin_threshold and l["x0"] < side_panel_threshold
-        ]
-
-        # Collect side panel text separately
-        side_panel_lines = [l for l in all_lines if l["x0"] >= side_panel_threshold]
-
-        if len(content_lines) < 5:
-            continue
-
-        # Sort by y, then group into rows
-        content_lines.sort(key=lambda l: (l["y_center"], l["x0"]))
-        rows = []
-        current_row = [content_lines[0]]
-
-        for line in content_lines[1:]:
-            if abs(line["y_center"] - current_row[0]["y_center"]) < Y_TOLERANCE:
-                current_row.append(line)
-            else:
-                rows.append(sorted(current_row, key=lambda l: l["x0"]))
-                current_row = [line]
-        rows.append(sorted(current_row, key=lambda l: l["x0"]))
-
-        # Count rows with 2+ elements separated by a gap (multi-column indicator)
-        multi_col_rows = 0
-        gap_positions = []
-        for row in rows:
-            if len(row) >= 2:
-                for i in range(len(row) - 1):
-                    gap = row[i + 1]["x0"] - row[i]["x1"]
-                    if gap > GAP_THRESHOLD:
-                        multi_col_rows += 1
-                        gap_positions.append((row[i]["x1"] + row[i + 1]["x0"]) / 2)
-                        break
-
-        if multi_col_rows < MIN_TABLE_ROWS:
-            continue  # Not a table layout
-
-        # Find the dominant column split point
-        if not gap_positions:
-            continue
-        gap_positions.sort()
-        col_boundary = gap_positions[len(gap_positions) // 2]
-
-        # Build markdown output
-        md_lines = []
-        in_table = False
-        last_table_line_idx = -1  # Track last table row for continuation
-
-        # Add side panel as a separate block at the top if present
-        if side_panel_lines:
-            side_panel_lines.sort(key=lambda l: l["y_center"])
-            side_texts = [l["text"] for l in side_panel_lines]
-            md_lines.append(" | ".join(side_texts))
-            md_lines.append("")
-
-        for row in rows:
-            # Split into label (left of boundary) and value (right of boundary)
-            label_parts = [e["text"] for e in row if e["x0"] < col_boundary]
-            value_parts = [e["text"] for e in row if e["x0"] >= col_boundary]
-
-            label = " ".join(label_parts).strip()
-            value = " ".join(value_parts).strip()
-
-            if label and value:
-                if not in_table:
-                    md_lines.append("\n| | |")
-                    md_lines.append("|---|---|")
-                    in_table = True
-                md_lines.append(f"| {label} | {value} |")
-                last_table_line_idx = len(md_lines) - 1
-            elif label and not value:
-                # Label-only row: could be a section heading or a continuation
-                if in_table:
-                    md_lines.append("")
-                    in_table = False
-                md_lines.append(f"\n**{label}**\n")
-            elif value and not label:
-                # Value-only row: continuation of previous table row's value
-                if in_table and last_table_line_idx >= 0:
-                    # Append to the previous row's value cell
-                    prev = md_lines[last_table_line_idx]
-                    # Insert before the trailing " |"
-                    prev = prev.rstrip()
-                    if prev.endswith("|"):
-                        prev = prev[:-1].rstrip() + " " + value + " |"
-                    md_lines[last_table_line_idx] = prev
-                elif in_table:
-                    md_lines.append(f"| | {value} |")
-                else:
-                    md_lines.append(value)
-
-        if md_lines:
-            reconstructed[page_idx] = "\n".join(md_lines)
-            print(f"  Page {page_idx + 1}: reconstructed {multi_col_rows} table row(s) from column layout")
-
-    return reconstructed
+    return md_file.read_text(encoding='utf-8')
 
 
 def pdf_to_markdown(pdf_path, output_path, write_images=False, images_dir=None,
                     image_heavy_threshold=IMAGE_HEAVY_THRESHOLD):
     """
-    Convert PDF to Markdown format using pymupdf4llm with page-aware extraction.
+    Convert PDF to Markdown format using Open Data Loader with page-aware
+    extraction.
 
     Args:
         pdf_path: Path to input PDF file
@@ -363,51 +242,28 @@ def pdf_to_markdown(pdf_path, output_path, write_images=False, images_dir=None,
     if write_images and images_dir:
         images_dir = Path(images_dir)
         # Create subfolder with PDF filename (without extension)
-        pdf_folder_name = pdf_path.stem
-        image_path = images_dir / pdf_folder_name
+        image_path = images_dir / pdf_path.stem
         image_path.mkdir(parents=True, exist_ok=True)
         print(f"  Images will be saved to: {image_path}")
 
-    # Convert PDF to markdown using page_chunks mode for page-aware extraction
-    page_chunks = pymupdf4llm.to_markdown(
-        str(pdf_path),
-        write_images=write_images,
-        image_path=str(image_path) if image_path else None,
-        page_chunks=True
-    )
+    # Run the loader into a scratch dir so its output naming (<stem>.md) does
+    # not constrain where the caller wants the markdown to land.
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        md_text = run_open_data_loader(
+            pdf_path,
+            tmp_dir,
+            image_dir=image_path if image_path else None,
+        )
+        # Re-anchor image refs onto the real images folder; the loader's own
+        # paths point at a location that does not exist.
+        md_text = normalize_image_refs(md_text, tmp_dir, image_dir=image_path)
 
-    # Detect text that overlaps with image bounding boxes (for cleanup on text-heavy pages)
-    overlap_text_by_page = get_image_overlap_text(pdf_path)
-    if overlap_text_by_page:
-        total = sum(len(v) for v in overlap_text_by_page.values())
-        print(f"  Found {total} text fragment(s) inside image regions across {len(overlap_text_by_page)} page(s)")
-
-    # Reconstruct table layouts from coordinate analysis
-    # Keep doc open through the page loop — also needed for full-page scan extraction
-    doc = fitz.open(str(pdf_path))
-    reconstructed_pages = reconstruct_page_tables(doc)
+    pages = split_pages(md_text)
 
     md_parts = []
     page_classification = {}
 
-    for i, chunk in enumerate(page_chunks):
-        # pymupdf4llm <0.0.17: chunk['metadata']['page'] (1-indexed)
-        # pymupdf4llm >=0.0.17: chunk['page'] (0-indexed, top-level)
-        meta_page = chunk.get('metadata', {}).get('page')
-        if meta_page is not None:
-            page_num = meta_page
-        else:
-            page_num = chunk.get('page', i) + 1
-        fitz_page_idx = page_num - 1                  # 0-indexed for fitz lookups
-        page_text = chunk['text']
-
-        # pymupdf4llm silently skips full-page images (scanned pages).
-        # Detect and extract them directly via fitz when write_images is enabled.
-        if not page_text.strip() and write_images and image_path:
-            scan_imgs = extract_fullpage_scan_images(doc, image_path, fitz_page_idx, pdf_path.stem)
-            for img_out_path in scan_imgs:
-                page_text += f"\n![scanned page]({img_out_path})\n"
-
+    for page_num, page_text in pages:
         page_type, word_count = classify_page(page_text, image_heavy_threshold)
 
         # Find images referenced in this page
@@ -417,7 +273,7 @@ def pdf_to_markdown(pdf_path, output_path, write_images=False, images_dir=None,
         page_classification[str(page_num)] = {
             'type': page_type,
             'word_count': word_count,
-            'images': image_names
+            'images': image_names,
         }
 
         print(f"  Page {page_num}: {page_type} (words: {word_count}, images: {len(image_names)})")
@@ -429,24 +285,8 @@ def pdf_to_markdown(pdf_path, output_path, write_images=False, images_dir=None,
             # Strip text artifacts, keep only image references
             # Pixtral will be the sole content source for this page
             md_parts.append(strip_text_keep_images(page_text))
-        elif fitz_page_idx in reconstructed_pages:
-            # Use coordinate-reconstructed table layout instead of pymupdf4llm text
-            # Preserve any image references from the original text
-            image_refs = [line for line in page_text.split('\n')
-                         if re.search(r'!\[.*?\]\(.*?\)', line)]
-            reconstructed = reconstructed_pages[fitz_page_idx]
-            if image_refs:
-                reconstructed = '\n'.join(image_refs) + '\n\n' + reconstructed
-            md_parts.append(reconstructed)
         else:
-            # Strip text that overlaps with image regions (OCR artifacts from diagrams)
-            overlap_texts = overlap_text_by_page.get(page_num, set())
-            if overlap_texts:
-                page_text = strip_image_overlap_text(page_text, overlap_texts)
-                print(f"    Stripped {len(overlap_texts)} image-region text fragment(s)")
             md_parts.append(page_text)
-
-    doc.close()
 
     md_text = '\n\n'.join(md_parts)
 
@@ -528,18 +368,20 @@ def main():
 Examples:
   Single file:
     python pdf_to_md.py input.pdf output.md
-  
+
   Batch process folder:
     python pdf_to_md.py --input-folder files --output-folder output_files
-  
+
   With image extraction:
     python pdf_to_md.py input.pdf output.md --with-images --images-dir ./images
-    
+
   Batch with images:
     python pdf_to_md.py --input-folder files --output-folder output_files --with-images --images-dir ./images
+
+Requires a JRE 11+ on PATH (Open Data Loader ships a bundled engine).
         """
     )
-    
+
     parser.add_argument('input', nargs='?', help='Input PDF file')
     parser.add_argument('output', nargs='?', help='Output MD file')
     parser.add_argument('--input-folder', help='Input folder containing PDF files')
@@ -565,11 +407,11 @@ Examples:
                 output = args.output
             pdf_to_markdown(args.input, output, args.with_images, args.images_dir,
                           args.image_heavy_threshold)
-        
+
         else:
             parser.print_help()
             sys.exit(1)
-            
+
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

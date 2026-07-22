@@ -389,7 +389,7 @@ pip install -r requirements.txt
 playwright install chromium  # Required for web crawler
 ```
 
-Requires Python 3.9+. Set `SCALEWAY_API_KEY` environment variable for image description generation (or pass `--api-key` to the pipeline).
+Requires Python 3.10+. No system Java needed: PDF extraction runs on `opendataloader-pdf`, which needs a JVM, and `jdk4py` supplies one via pip — `pdf_to_md.py` points the loader at it automatically, preferring a system `java` if one exists. Set `SCALEWAY_API_KEY` environment variable for image description generation (or pass `--api-key` to the pipeline).
 
 ---
 

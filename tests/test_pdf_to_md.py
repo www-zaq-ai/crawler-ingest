@@ -1,8 +1,9 @@
 """
-Tests for pdf_to_md.py — focusing on pure functions and the chunk page_num
-resolution fix (KeyError 'page' across pymupdf4llm versions).
+Tests for pdf_to_md.py — focusing on pure functions and the Open Data Loader
+markdown post-processing (page splitting and image-ref normalisation).
 """
 
+import os
 import json
 import sys
 from pathlib import Path
@@ -11,7 +12,12 @@ from unittest.mock import MagicMock, patch, mock_open
 import pytest
 
 import pdf_to_md
-from pdf_to_md import classify_page, strip_text_keep_images
+from pdf_to_md import (
+    classify_page,
+    strip_text_keep_images,
+    normalize_image_refs,
+    split_pages,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -73,35 +79,161 @@ class TestStripTextKeepImages:
 
 
 # ---------------------------------------------------------------------------
-# Chunk page_num resolution (the bug fix)
+# ensure_java_runtime
 # ---------------------------------------------------------------------------
 
-def _make_fitz_doc_mock():
-    """Return a mock fitz document that reconstruct_page_tables handles safely."""
-    page_mock = MagicMock()
-    page_mock.get_text.return_value = {"blocks": []}
-    doc_mock = MagicMock()
-    doc_mock.__iter__ = MagicMock(return_value=iter([]))
-    doc_mock.__len__ = MagicMock(return_value=1)
-    return doc_mock
-
-
-def _run_pdf_to_markdown_with_chunks(chunks):
+class TestEnsureJavaRuntime:
     """
-    Call pdf_to_markdown with mocked pymupdf4llm and fitz, injecting the
-    given chunks. Returns the written markdown string.
+    Deployment images carry no system JRE, so the loader must be pointed at the
+    pip-installed jdk4py runtime.
+    """
+
+    def test_system_java_wins_when_present(self):
+        with patch("pdf_to_md.shutil.which", return_value="/usr/bin/java"):
+            assert pdf_to_md.ensure_java_runtime() is None
+
+    def test_falls_back_to_jdk4py_without_system_java(self, monkeypatch):
+        monkeypatch.setenv("PATH", "/nowhere")
+        with patch("pdf_to_md.shutil.which", return_value=None):
+            java_bin = pdf_to_md.ensure_java_runtime()
+
+        assert java_bin is not None
+        assert Path(java_bin).exists(), "jdk4py should ship a real java binary"
+        # The loader shells out to bare `java`, so its dir must be on PATH
+        assert str(Path(java_bin).parent) in os.environ["PATH"]
+        assert os.environ["JAVA_HOME"]
+
+    def test_raises_clear_error_when_no_runtime_available(self, monkeypatch):
+        """Missing JRE must fail with an actionable message, not a JAR stack trace."""
+        import builtins
+        real_import = builtins.__import__
+
+        def no_jdk4py(name, *args, **kwargs):
+            if name == "jdk4py":
+                raise ImportError("no jdk4py")
+            return real_import(name, *args, **kwargs)
+
+        with patch("pdf_to_md.shutil.which", return_value=None), \
+             patch.object(builtins, "__import__", side_effect=no_jdk4py):
+            with pytest.raises(RuntimeError, match="No Java runtime found"):
+                pdf_to_md.ensure_java_runtime()
+
+
+# ---------------------------------------------------------------------------
+# normalize_image_refs
+# ---------------------------------------------------------------------------
+
+class TestNormalizeImageRefs:
+    """Open Data Loader emits ![](<relative/path.png>) — angle brackets and all."""
+
+    def test_strips_angle_brackets(self):
+        md = "![](<imgs/imageFile1.png>)"
+        result = normalize_image_refs(md, "/base")
+        assert "<" not in result and ">" not in result
+        assert result == "![](/base/imgs/imageFile1.png)"
+
+    def test_resolves_relative_to_base_dir(self):
+        result = normalize_image_refs("![alt](<a.png>)", "/base/out")
+        assert result == "![alt](/base/out/a.png)"
+
+    def test_preserves_alt_text(self):
+        result = normalize_image_refs("![a chart](<x.png>)", "/base")
+        assert result.startswith("![a chart](")
+
+    def test_absolute_paths_left_alone(self):
+        result = normalize_image_refs("![](</tmp/abs.png>)", "/base")
+        assert result == "![](/tmp/abs.png)"
+
+    def test_handles_refs_without_angle_brackets(self):
+        result = normalize_image_refs("![](imgs/b.png)", "/base")
+        assert result == "![](/base/imgs/b.png)"
+
+    def test_output_matches_downstream_regex(self):
+        """clean_md / inject_descriptions use !\\[([^\\]]*)\\]\\(([^\\)]+)\\)."""
+        import re
+        result = normalize_image_refs("![](<imgs/imageFile1.png>)", "/base")
+        match = re.search(r'!\[([^\]]*)\]\(([^\)]+)\)', result)
+        assert match is not None
+        # The captured path must be usable — no stray bracket in the filename
+        assert Path(match.group(2)).name == "imageFile1.png"
+
+    def test_leaves_non_image_text_untouched(self):
+        md = "Some text\n\n[a link](http://example.com)\n"
+        assert normalize_image_refs(md, "/base") == md
+
+    def test_reanchors_onto_real_image_dir(self):
+        """
+        Regression: the loader echoes only the last component of --image-dir
+        relative to its output dir, so refs must be re-anchored by basename
+        onto where the files were actually written — not resolved against the
+        (temporary) output dir, which leaves dangling paths.
+        """
+        md = "![](<good/imageFile1.png>)"
+        result = normalize_image_refs(md, "/tmp/scratch", image_dir="/real/images/good")
+        assert result == "![](/real/images/good/imageFile1.png)"
+        assert "/tmp/scratch" not in result
+
+    def test_image_dir_flattens_nested_refs(self):
+        result = normalize_image_refs(
+            "![](<a/b/c/img.png>)", "/tmp/scratch", image_dir="/real/imgs"
+        )
+        assert result == "![](/real/imgs/img.png)"
+
+
+# ---------------------------------------------------------------------------
+# split_pages
+# ---------------------------------------------------------------------------
+
+class TestSplitPages:
+    def test_splits_on_separator(self):
+        md = "<!-- page: 1 -->\n\nfirst\n\n<!-- page: 2 -->\n\nsecond"
+        assert split_pages(md) == [(1, "first"), (2, "second")]
+
+    def test_uses_emitted_page_numbers(self):
+        """Page numbers come from the loader, not enumeration order."""
+        md = "<!-- page: 4 -->\n\nfour\n\n<!-- page: 5 -->\n\nfive"
+        assert [n for n, _ in split_pages(md)] == [4, 5]
+
+    def test_no_separator_yields_single_page(self):
+        assert split_pages("just content") == [(1, "just content")]
+
+    def test_empty_input_yields_no_pages(self):
+        assert split_pages("") == []
+        assert split_pages("   \n  ") == []
+
+    def test_preamble_attributed_to_first_page(self):
+        md = "title line\n\n<!-- page: 1 -->\n\nbody"
+        pages = split_pages(md)
+        assert len(pages) == 1
+        assert "title line" in pages[0][1]
+        assert "body" in pages[0][1]
+
+    def test_empty_trailing_page_preserved(self):
+        md = "<!-- page: 1 -->\n\ncontent\n\n<!-- page: 2 -->\n\n"
+        assert split_pages(md) == [(1, "content"), (2, "")]
+
+    def test_multipage_content_kept_intact(self):
+        md = "<!-- page: 1 -->\n\nline a\nline b\n\n<!-- page: 2 -->\n\nline c"
+        pages = split_pages(md)
+        assert pages[0][1] == "line a\nline b"
+        assert pages[1][1] == "line c"
+
+
+# ---------------------------------------------------------------------------
+# pdf_to_markdown end-to-end (loader mocked)
+# ---------------------------------------------------------------------------
+
+def _run_pdf_to_markdown_with_loader_output(md_text):
+    """
+    Call pdf_to_markdown with the Open Data Loader call mocked out to return
+    the given markdown. Returns the written markdown string.
     """
     written = []
 
     def fake_write_bytes(self, data):
         written.append(data.decode() if isinstance(data, bytes) else data)
 
-    doc_mock = _make_fitz_doc_mock()
-
-    with patch("pdf_to_md.pymupdf4llm.to_markdown", return_value=chunks), \
-         patch("pdf_to_md.fitz.open", return_value=doc_mock), \
-         patch("pdf_to_md.get_image_overlap_text", return_value={}), \
-         patch("pdf_to_md.reconstruct_page_tables", return_value={}), \
+    with patch("pdf_to_md.run_open_data_loader", return_value=md_text), \
          patch.object(Path, "write_bytes", fake_write_bytes), \
          patch.object(Path, "exists", return_value=True), \
          patch.object(Path, "mkdir", return_value=None):
@@ -115,41 +247,37 @@ def _run_pdf_to_markdown_with_chunks(chunks):
     return "".join(written)
 
 
-class TestChunkPageResolution:
-    """Verify page_num is extracted correctly from both pymupdf4llm chunk formats."""
-
-    def test_old_format_metadata_page(self):
-        """pymupdf4llm <0.0.17: page number lives in chunk['metadata']['page'] (1-indexed)."""
-        chunks = [
-            {"metadata": {"page": 1}, "text": "Page one content with enough words here yes"},
-            {"metadata": {"page": 2}, "text": "Page two content with enough words here yes"},
-        ]
-        md = _run_pdf_to_markdown_with_chunks(chunks)
+class TestPdfToMarkdown:
+    def test_page_separators_emitted(self):
+        md = _run_pdf_to_markdown_with_loader_output(
+            "<!-- page: 1 -->\n\nPage one content with enough words here yes\n\n"
+            "<!-- page: 2 -->\n\nPage two content with enough words here yes"
+        )
         assert "<!-- page: 1 -->" in md
         assert "<!-- page: 2 -->" in md
 
-    def test_new_format_top_level_page(self):
-        """pymupdf4llm >=0.0.17: page number is top-level chunk['page'] (0-indexed)."""
-        chunks = [
-            {"metadata": {}, "page": 0, "text": "Page one content with enough words here yes"},
-            {"metadata": {}, "page": 1, "text": "Page two content with enough words here yes"},
-        ]
-        md = _run_pdf_to_markdown_with_chunks(chunks)
-        assert "<!-- page: 1 -->" in md
-        assert "<!-- page: 2 -->" in md
+    def test_image_heavy_page_strips_text(self):
+        """A page with an image and few words keeps only the image ref."""
+        md = _run_pdf_to_markdown_with_loader_output(
+            "<!-- page: 1 -->\n\n![](<fig.png>)\n\nshort caption"
+        )
+        assert "![](" in md
+        assert "short caption" not in md
 
-    def test_missing_page_key_falls_back_to_index(self):
-        """If neither metadata.page nor chunk.page exist, fall back to enumeration index."""
-        chunks = [
-            {"metadata": {}, "text": "First page content with enough words here yes"},
-            {"metadata": {}, "text": "Second page content with enough words here yes"},
-        ]
-        md = _run_pdf_to_markdown_with_chunks(chunks)
-        assert "<!-- page: 1 -->" in md
-        assert "<!-- page: 2 -->" in md
+    def test_text_heavy_page_keeps_text(self):
+        body = " ".join(["word"] * 40)
+        md = _run_pdf_to_markdown_with_loader_output(
+            f"<!-- page: 1 -->\n\n![](<fig.png>)\n\n{body}"
+        )
+        assert "word word" in md
 
-    def test_old_format_does_not_raise_key_error(self):
-        """Regression: the original KeyError: 'page' must not occur."""
-        chunks = [{"metadata": {"file_path": "/fake/input.pdf"}, "text": "hello world content here"}]
-        # Should not raise
-        _run_pdf_to_markdown_with_chunks(chunks)
+    def test_loader_failure_propagates(self):
+        with patch("pdf_to_md.run_open_data_loader", side_effect=RuntimeError("boom")), \
+             patch.object(Path, "exists", return_value=True), \
+             patch.object(Path, "mkdir", return_value=None):
+            with pytest.raises(RuntimeError):
+                pdf_to_md.pdf_to_markdown("/fake/in.pdf", "/fake/out.md")
+
+    def test_missing_pdf_raises(self):
+        with pytest.raises(FileNotFoundError):
+            pdf_to_md.pdf_to_markdown("/definitely/not/here.pdf", "/fake/out.md")
