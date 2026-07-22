@@ -88,13 +88,34 @@ class TestConvertFile:
 
         assert output_path.read_text(encoding="utf-8") == content
 
+    def test_passes_input_path_to_markitdown(self, tmp_path):
+        input_path = tmp_path / "report.docx"
+        input_path.write_bytes(b"fake")
+
+        with patch("docx_to_md._converter.convert", return_value=_make_convert_result("x")) as conv:
+            convert_file(input_path, tmp_path / "report.md", quiet=True)
+
+        conv.assert_called_once_with(str(input_path))
+
+    def test_writes_table_markup_verbatim(self, tmp_path):
+        """markitdown owns table rendering now — output is passed through untouched."""
+        input_path = tmp_path / "report.docx"
+        input_path.write_bytes(b"fake")
+        output_path = tmp_path / "report.md"
+        table = "# Report\n\n|  |  |\n| --- | --- |\n| Region | Q1 |\n| North | 120 |"
+
+        with patch("docx_to_md._converter.convert", return_value=_make_convert_result(table)):
+            convert_file(input_path, output_path, quiet=True)
+
+        assert output_path.read_text() == table
+
 
 # ---------------------------------------------------------------------------
 # process_folder
 # ---------------------------------------------------------------------------
 
 class TestProcessFolder:
-    def test_no_pptx_files_returns_zero_total(self, tmp_path, capsys):
+    def test_no_docx_files_returns_zero_total(self, tmp_path):
         result = process_folder(tmp_path, tmp_path / "out", quiet=True)
         assert result == {"total": 0, "success": 0, "failed": 0}
 
@@ -102,7 +123,7 @@ class TestProcessFolder:
         (tmp_path / "doc.docx").write_bytes(b"fake")
         out_dir = tmp_path / "out"
 
-        with patch("docx_to_md._converter.convert", return_value=_make_convert_result("# Deck")):
+        with patch("docx_to_md._converter.convert", return_value=_make_convert_result("# Report")):
             result = process_folder(tmp_path, out_dir, quiet=True)
 
         assert result == {"total": 1, "success": 1, "failed": 0}
@@ -156,6 +177,18 @@ class TestProcessFolder:
 
         assert "1/1" in capsys.readouterr().out
 
+    def test_ignores_non_docx_files(self, tmp_path):
+        (tmp_path / "keep.docx").write_bytes(b"fake")
+        for name in ("notes.txt", "sheet.xlsx", "deck.pptx", "scan.pdf"):
+            (tmp_path / name).write_bytes(b"fake")
+        out_dir = tmp_path / "out"
+
+        with patch("docx_to_md._converter.convert", return_value=_make_convert_result("x")):
+            result = process_folder(tmp_path, out_dir, quiet=True)
+
+        assert result == {"total": 1, "success": 1, "failed": 0}
+        assert {p.name for p in out_dir.iterdir()} == {"keep.md"}
+
 
 # ---------------------------------------------------------------------------
 # main (CLI)
@@ -163,22 +196,22 @@ class TestProcessFolder:
 
 class TestMain:
     def test_single_file_success(self, tmp_path, monkeypatch):
-        pptx = tmp_path / "doc.docx"
-        pptx.write_bytes(b"fake")
-        monkeypatch.setattr("sys.argv", ["docx_to_md.py", str(pptx)])
+        docx = tmp_path / "doc.docx"
+        docx.write_bytes(b"fake")
+        monkeypatch.setattr("sys.argv", ["docx_to_md.py", str(docx)])
 
         with patch("docx_to_md._converter.convert", return_value=_make_convert_result("# Hi")):
             with pytest.raises(SystemExit) as exc:
                 main()
 
         assert exc.value.code == 0
-        assert pptx.with_suffix(".md").exists()
+        assert docx.with_suffix(".md").exists()
 
     def test_custom_output_path(self, tmp_path, monkeypatch):
-        pptx = tmp_path / "doc.docx"
-        pptx.write_bytes(b"fake")
+        docx = tmp_path / "doc.docx"
+        docx.write_bytes(b"fake")
         out = tmp_path / "custom.md"
-        monkeypatch.setattr("sys.argv", ["docx_to_md.py", str(pptx), "--output", str(out)])
+        monkeypatch.setattr("sys.argv", ["docx_to_md.py", str(docx), "--output", str(out)])
 
         with patch("docx_to_md._converter.convert", return_value=_make_convert_result("hi")):
             with pytest.raises(SystemExit) as exc:
