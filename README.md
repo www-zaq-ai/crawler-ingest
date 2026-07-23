@@ -13,8 +13,8 @@ A pipeline that converts PDFs into clean, vector-DB-ready markdown — extractin
 - **Table reconstruction** — detects multi-column datasheet layouts and rebuilds them as proper markdown tables
 - **Image-region text cleanup** — removes OCR artifacts from text overlapping image bounding boxes
 - **Page separators** — `<!-- page: N -->` comments for downstream chunkers
-- **DOCX → Markdown** conversion using mammoth + python-docx (tables, headings, lists)
-- **XLSX → Markdown** conversion using pandas (multi-sheet, natural-language sentences)
+- **DOCX → Markdown** conversion using markitdown (tables, headings, lists)
+- **XLSX → Markdown** conversion using markitdown (multi-sheet, markdown tables)
 - **PPTX → Markdown** conversion using markitdown (slide text, titles, speaker notes)
 - **Image deduplication** using perceptual hashing
 - **AI-powered image descriptions** via Pixtral API with describe/transcribe prompt modes
@@ -173,7 +173,7 @@ python pipeline.py --input-folder ./crawled/pdfs --output-folder ./markdown
 
 ### DOCX → Markdown
 
-Converts Word documents to clean markdown using a hybrid approach: **mammoth** handles headings, paragraphs, and lists while **python-docx** renders tables as proper markdown tables.
+Converts Word documents to clean markdown using **markitdown**.
 
 ```bash
 # Single file
@@ -190,7 +190,7 @@ python docx_to_md.py report.docx --quiet
 ```
 
 **What it handles:**
-- Headings (H1–H4), paragraphs, bullet and numbered lists
+- Headings, paragraphs, bullet and numbered lists
 - Tables → proper `| col | col |` markdown tables
 - Inline formatting: bold, italic, inline code
 - Folder mode with sub-folder structure preservation
@@ -220,7 +220,7 @@ python pptx_to_md.py slides.pptx --quiet
 
 ### XLSX → Markdown
 
-Converts Excel and CSV files to natural-language markdown. Each row becomes a readable sentence, making the output meaningful for vector search and LLM reasoning.
+Converts Excel and CSV files to markdown using **markitdown**. Each sheet becomes an `## H2` section containing a markdown table.
 
 ```bash
 # Single file (all sheets)
@@ -228,9 +228,6 @@ python xlsx_to_md.py report.xlsx
 
 # Single file with custom output path
 python xlsx_to_md.py report.xlsx --output report.md
-
-# Specific sheet only
-python xlsx_to_md.py report.xlsx --sheet "Summary"
 
 # Entire folder (preserves sub-folder structure)
 python xlsx_to_md.py --input-folder ./sheets --output-folder ./markdown
@@ -242,7 +239,7 @@ python xlsx_to_md.py report.xlsx --quiet
 **What it handles:**
 - `.xlsx`, `.xls`, and `.csv` files
 - Multi-sheet Excel files — each sheet becomes an `## H2` section
-- Unnamed first columns (e.g. dates) used as sentence prefixes
+- Folder mode with sub-folder structure preservation
 - Empty rows and columns automatically dropped
 
 **Example output:**
@@ -389,7 +386,7 @@ pip install -r requirements.txt
 playwright install chromium  # Required for web crawler
 ```
 
-Requires Python 3.9+. Set `SCALEWAY_API_KEY` environment variable for image description generation (or pass `--api-key` to the pipeline).
+Requires Python 3.10+. No system Java needed: PDF extraction runs on `opendataloader-pdf`, which needs a JVM, and `jdk4py` supplies one via pip — `pdf_to_md.py` points the loader at it automatically, preferring a system `java` if one exists. Set `SCALEWAY_API_KEY` environment variable for image description generation (or pass `--api-key` to the pipeline).
 
 ---
 
