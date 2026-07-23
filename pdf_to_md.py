@@ -15,7 +15,42 @@ import json
 import shutil
 import argparse
 import tempfile
+import subprocess
 from pathlib import Path
+
+
+def _java_usable(java_bin):
+    """
+    Check that a java on PATH is a real runtime, not a placeholder.
+
+    macOS ships a `/usr/bin/java` stub launcher on every install, even with no
+    JDK present. It resolves on PATH but exits non-zero with "Unable to locate
+    a Java Runtime", so presence alone is not proof of a usable JVM.
+    """
+    try:
+        result = subprocess.run(
+            [java_bin, '-version'], capture_output=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    return result.returncode == 0
+
+
+def _no_java_message(tried):
+    """
+    Build an actionable failure message naming every candidate we ruled out.
+
+    Without the list, "No Java runtime found" reads as a lie to anyone looking
+    at a `java` that plainly exists on PATH.
+    """
+    attempts = '\n'.join(f'  - {t}' for t in tried)
+    return (
+        'No usable Java runtime found. Open Data Loader needs a JRE 11+.\n'
+        f'Tried:\n{attempts}\n'
+        'Fix: `pip install -r requirements.txt` (installs jdk4py, a '
+        'self-contained runtime), or install a JRE 11+ system-wide.'
+    )
 
 
 def ensure_java_runtime():
@@ -24,26 +59,37 @@ def ensure_java_runtime():
 
     Deployment containers install this pipeline with `pip install -r
     requirements.txt` and carry no system JRE, so we fall back to the
-    pip-installed runtime from `jdk4py`. A system java, if present, wins —
-    an operator who installed one meant it to be used.
+    pip-installed runtime from `jdk4py`. A working system java, if present,
+    wins — an operator who installed one meant it to be used.
 
     Returns:
-        The path to the java binary that will be used, or None if the system
-        one is already on PATH.
+        The path to the java binary that will be used, or None if a working
+        system one is already on PATH.
     """
-    if shutil.which('java'):
-        return None
+    tried = []
+
+    system_java = shutil.which('java')
+    if system_java:
+        if _java_usable(system_java):
+            return None
+        # macOS ships a /usr/bin/java stub that resolves but is not a JVM.
+        tried.append(f'system java at {system_java} (does not run)')
 
     try:
         import jdk4py
     except ImportError:
-        raise RuntimeError(
-            'No Java runtime found. Open Data Loader needs a JRE 11+.\n'
-            'Install one system-wide, or `pip install jdk4py` to get a '
-            'self-contained runtime (it is in requirements.txt).'
-        )
+        tried.append('jdk4py (not installed)')
+        raise RuntimeError(_no_java_message(tried))
 
     java_bin = Path(jdk4py.JAVA)
+
+    # Trust nothing we have not run. A wrong-arch wheel, a lost exec bit or a
+    # partial install all leave jdk4py importable but unusable, and the failure
+    # would otherwise surface as an opaque non-zero exit from the loader's JAR.
+    if not _java_usable(java_bin):
+        tried.append(f'jdk4py runtime at {java_bin} (installed but does not run)')
+        raise RuntimeError(_no_java_message(tried))
+
     os.environ['JAVA_HOME'] = str(jdk4py.JAVA_HOME)
     os.environ['PATH'] = f'{java_bin.parent}{os.pathsep}' + os.environ.get('PATH', '')
     return java_bin

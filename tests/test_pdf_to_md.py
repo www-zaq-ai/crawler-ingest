@@ -89,8 +89,28 @@ class TestEnsureJavaRuntime:
     """
 
     def test_system_java_wins_when_present(self):
-        with patch("pdf_to_md.shutil.which", return_value="/usr/bin/java"):
+        with patch("pdf_to_md.shutil.which", return_value="/usr/bin/java"), \
+             patch("pdf_to_md._java_usable", return_value=True):
             assert pdf_to_md.ensure_java_runtime() is None
+
+    def test_macos_java_stub_falls_back_to_jdk4py(self, monkeypatch):
+        """
+        macOS ships a /usr/bin/java stub on every install. It resolves on PATH
+        but is not a JVM, so presence must not short-circuit the jdk4py path.
+        """
+        monkeypatch.setenv("PATH", "/nowhere")
+
+        # Only the stub is unusable — the real jdk4py runtime must still pass.
+        def usable(java_bin):
+            return str(java_bin) != "/usr/bin/java"
+
+        with patch("pdf_to_md.shutil.which", return_value="/usr/bin/java"), \
+             patch("pdf_to_md._java_usable", side_effect=usable):
+            java_bin = pdf_to_md.ensure_java_runtime()
+
+        assert java_bin is not None
+        assert Path(java_bin).exists()
+        assert str(Path(java_bin).parent) in os.environ["PATH"]
 
     def test_falls_back_to_jdk4py_without_system_java(self, monkeypatch):
         monkeypatch.setenv("PATH", "/nowhere")
@@ -102,6 +122,28 @@ class TestEnsureJavaRuntime:
         # The loader shells out to bare `java`, so its dir must be on PATH
         assert str(Path(java_bin).parent) in os.environ["PATH"]
         assert os.environ["JAVA_HOME"]
+
+    def test_raises_when_jdk4py_installed_but_unusable(self):
+        """
+        A wrong-arch wheel or lost exec bit leaves jdk4py importable but not
+        runnable. That must fail here with a clear message, not later as an
+        opaque non-zero exit from the loader's JAR.
+        """
+        with patch("pdf_to_md.shutil.which", return_value=None), \
+             patch("pdf_to_md._java_usable", return_value=False):
+            with pytest.raises(RuntimeError, match="does not run"):
+                pdf_to_md.ensure_java_runtime()
+
+    def test_error_message_names_every_candidate_tried(self):
+        """The message must not claim 'no java' while one sits on PATH."""
+        with patch("pdf_to_md.shutil.which", return_value="/usr/bin/java"), \
+             patch("pdf_to_md._java_usable", return_value=False):
+            with pytest.raises(RuntimeError) as exc:
+                pdf_to_md.ensure_java_runtime()
+
+        message = str(exc.value)
+        assert "/usr/bin/java" in message
+        assert "jdk4py" in message
 
     def test_raises_clear_error_when_no_runtime_available(self, monkeypatch):
         """Missing JRE must fail with an actionable message, not a JAR stack trace."""
@@ -115,7 +157,7 @@ class TestEnsureJavaRuntime:
 
         with patch("pdf_to_md.shutil.which", return_value=None), \
              patch.object(builtins, "__import__", side_effect=no_jdk4py):
-            with pytest.raises(RuntimeError, match="No Java runtime found"):
+            with pytest.raises(RuntimeError, match="No usable Java runtime found"):
                 pdf_to_md.ensure_java_runtime()
 
 
