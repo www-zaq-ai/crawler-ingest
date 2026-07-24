@@ -16,6 +16,7 @@ A pipeline that converts PDFs into clean, vector-DB-ready markdown — extractin
 - **DOCX → Markdown** conversion using markitdown (tables, headings, lists)
 - **XLSX → Markdown** conversion using markitdown (multi-sheet, markdown tables)
 - **PPTX → Markdown** conversion using markitdown (slide text, titles, speaker notes)
+- **Markdown → PDF** conversion (the reverse direction) using markdown-pdf — self-contained, no external engine
 - **Image deduplication** using perceptual hashing
 - **AI-powered image descriptions** via Pixtral API with describe/transcribe prompt modes
 - **Automated cleanup** of duplicate references in markdown
@@ -82,6 +83,16 @@ python pptx_to_md.py slides.pptx
 
 # Entire folder
 python pptx_to_md.py --input-folder ./decks --output-folder ./markdown
+```
+
+### Convert Markdown to PDF (reverse)
+
+```bash
+# Single file
+python md_to_doc.py report.md
+
+# Entire folder
+python md_to_doc.py --input-folder ./markdown --output-folder ./pdfs
 ```
 
 ---
@@ -249,6 +260,40 @@ python xlsx_to_md.py report.xlsx --quiet
 January — Revenue: 120000, Expenses: 80000, Profit: 40000.
 February — Revenue: 135000, Expenses: 85000, Profit: 50000.
 ```
+
+### Markdown → PDF (reverse direction)
+
+The inverse of the converters above: turn a markdown file back into a document
+with **`md_to_doc.py`**. PDF is rendered in-process via **markdown-pdf**
+(PyMuPDF) — fully self-contained, with **no external PDF engine** (no LaTeX,
+wkhtmltopdf, or LibreOffice) and no system binaries.
+
+```bash
+# Single file (report.md → report.pdf)
+python md_to_doc.py report.md
+
+# Explicit target + custom output path
+python md_to_doc.py report.md --to pdf --output report.pdf
+
+# Include a table-of-contents page and PDF bookmarks
+python md_to_doc.py report.md --toc
+
+# Entire folder (preserves sub-folder structure)
+python md_to_doc.py --input-folder ./markdown --output-folder ./pdfs
+
+# Quiet mode
+python md_to_doc.py report.md --quiet
+```
+
+**What it handles:**
+- Headings, paragraphs, bullet and numbered lists
+- GitHub-flavored tables, strikethrough, and autolinks
+- Relative image references (resolved from the markdown file's own folder)
+- `--toc` adds a table-of-contents page plus PDF bookmarks
+- Folder mode with sub-folder structure preservation
+
+`--to` currently accepts `pdf`. Only self-contained targets will be added
+here — formats that would require an external engine are intentionally excluded.
 
 ---
 

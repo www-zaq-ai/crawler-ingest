@@ -10,6 +10,13 @@ jdk4py==25.0.2.1
 # Extras pull the format backends (mammoth, pandas+openpyxl, xlrd, python-pptx).
 markitdown[docx,pptx,xlsx,xls]==0.1.5
 
+# Markdown to document (inverse direction) — md_to_doc.py
+# markdown-pdf renders PDF in-process via PyMuPDF (bundled MuPDF wheel). Fully
+# self-contained: no external PDF engine, no system binaries. linkify-it-py is
+# needed by the gfm-like markdown mode (tables + autolinks) md_to_doc.py uses.
+markdown-pdf==1.13.2
+linkify-it-py==2.1.0
+
 # Image processing & deduplication
 Pillow==12.1.1
 imagehash==4.3.2
