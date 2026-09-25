@@ -8,18 +8,31 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
           cache: pip
+          cache-dependency-path: requirements.lock
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt pytest
+      - name: Install locked application dependencies
+        run: |
+          python -m pip install --no-deps -r requirements.lock
+          python -m pip check
 
-      - name: Run tests
+      - name: Install test runner
+        run: python -m pip install pytest
+
+      - name: Run tests and verify format backends
         run: python -m pytest tests/ -v
+
+      - name: Verify incomplete lock fails clean installation
+        run: python scripts/verify_incomplete_lock.py

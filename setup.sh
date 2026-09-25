@@ -1,19 +1,12 @@
 #!/bin/bash
-# Setup script for crawler-ingest
+# Set up crawler-ingest from its reviewed dependency lock.
+set -euo pipefail
 
 echo "Setting up crawler-ingest..."
 
-# Create virtual environment
-python3 -m venv venv
-
-# Activate virtual environment
-source venv/bin/activate
-
-# Upgrade pip
-pip install --upgrade pip
-
-# Install dependencies
-pip install -r requirements.txt
+python3.13 -m venv venv
+venv/bin/python -m pip install --no-deps -r requirements.lock
+venv/bin/python -m pip check
 
 echo ""
 echo "✓ Setup complete!"

@@ -3,7 +3,7 @@
 # ship no system Java, so jdk4py provides one as a pip wheel (~94 MB) and
 # pdf_to_md.py points the loader at it. Drop jdk4py only if every runtime
 # environment is guaranteed to have its own JRE.
-opendataloader-pdf==2.5.0
+opendataloader-pdf==2.5.11
 jdk4py==25.0.2.1
 
 # DOCX / XLSX / XLS / CSV / PPTX to Markdown

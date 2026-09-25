@@ -426,12 +426,22 @@ python pipeline.py report.pdf --quiet
 
 ## 📦 Installation
 
+Use CPython 3.13 and the committed `requirements.lock` for a complete application dependency install:
+
 ```bash
-pip install -r requirements.txt
-playwright install chromium  # Required for web crawler
+bash setup.sh
+venv/bin/python -m playwright install chromium  # Required for web crawler
 ```
 
-Requires Python 3.10+. No system Java needed: PDF extraction runs on `opendataloader-pdf`, which needs a JVM, and `jdk4py` supplies one via pip — `pdf_to_md.py` points the loader at it automatically, preferring a system `java` if one exists. Set `SCALEWAY_API_KEY` environment variable for image description generation (or pass `--api-key` to the pipeline).
+`setup.sh` installs the exact locked versions with `--no-deps` and runs `pip check`. The lock includes the backends selected by the `markitdown` format extras. No system Java is needed: PDF extraction runs on `opendataloader-pdf`, and `jdk4py` supplies its JVM through a wheel. Set `SCALEWAY_API_KEY` for image descriptions, or pass `--api-key` to the pipeline.
+
+When changing direct dependencies in `requirements.txt`, regenerate and review the single universal lock with **uv 0.10.9**:
+
+```bash
+uv pip compile --universal --python-version 3.13 requirements.txt --output-file requirements.lock
+```
+
+The universal resolution targets CPython 3.13 and is validated by clean installs on Linux amd64 and arm64 in CI. Re-run both architecture jobs after any lock change. ZAQ fetches this committed lock from a pinned crawler revision; it does not resolve dependencies during provisioning.
 
 ---
 
