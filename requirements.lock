@@ -122,7 +122,7 @@ onnxruntime==1.20.1
     # via magika
 openai==2.54.0
     # via langchain-openai
-opendataloader-pdf==2.5.18
+opendataloader-pdf==2.5.21
     # via -r requirements.txt
 openpyxl==3.1.5
     # via markitdown
